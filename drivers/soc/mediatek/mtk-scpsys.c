@@ -63,6 +63,7 @@ struct scp_domain_data {
 	u32 bus_prot_mask;
 	int id;
 	const char *clk_name;
+	bool active_wakeup;
 };
 
 static const struct scp_domain_data scp_domain_data[] = {
@@ -147,6 +148,7 @@ static const struct scp_domain_data scp_domain_data[] = {
 		.ctl_offs = SPM_USB_PWR_CON,
 		.sram_pdn_bits = GENMASK(11, 8),
 		.sram_pdn_ack_bits = GENMASK(15, 12),
+		.active_wakeup = true,
 	},
 };
 
@@ -324,6 +326,17 @@ out:
 	return ret;
 }
 
+static bool scpsys_active_wakeup(struct device *dev)
+{
+	struct generic_pm_domain *genpd;
+	struct scp_domain *scpd;
+
+	genpd = pd_to_genpd(dev->pm_domain);
+	scpd = container_of(genpd, struct scp_domain, pmd);
+
+	return scpd->data->active_wakeup;
+}
+
 static int scpsys_probe(struct platform_device *pdev)
 {
 	struct genpd_onecell_data *pd_data;
@@ -381,6 +394,7 @@ static int scpsys_probe(struct platform_device *pdev)
 		pmd->name = scp_domain_data[i].name;
 		pmd->power_off = scpsys_power_off;
 		pmd->power_on = scpsys_power_on;
+		pmd->dev_ops.active_wakeup = scpsys_active_wakeup;
 		pmd->power_off_latency_ns = 20000;
 		pmd->power_on_latency_ns = 20000;
 
