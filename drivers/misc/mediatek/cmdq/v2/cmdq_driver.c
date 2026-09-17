@@ -36,6 +36,9 @@
 #include <linux/sched.h>
 #include <linux/pm.h>
 #include <linux/suspend.h>
+#ifdef CONFIG_COMPAT
+#include <linux/compat.h>
+#endif
 #ifdef CMDQ_USE_LEGACY
 #include <mt-plat/mt_boot.h>
 #endif
@@ -61,6 +64,26 @@ static const struct of_device_id cmdq_of_ids[] = {
 static dev_t gCmdqDevNo;
 static struct cdev *gCmdqCDev;
 static struct class *gCMDQClass;
+static struct proc_dir_entry *gCmdqLegacyProcEntry;
+
+/*
+ * The stock Nougat MDP userspace opens /proc/mtk_cmdq and uses the DTS
+ * layout from before CMDQ_SUBSYS_IMGSYS_CONFIG was added.  Keep this ABI
+ * private to the legacy procfs endpoint; /dev/mtk_cmdq retains the current
+ * Oreo layout.
+ */
+#define CMDQ_LEGACY_SYNC_TOKEN_COUNT 511
+#define CMDQ_LEGACY_SUBSYS_COUNT 38
+#define CMDQ_LEGACY_MDP_BASE_COUNT 1
+
+struct cmdq_legacy_dts_data {
+	int32_t eventTable[CMDQ_LEGACY_SYNC_TOKEN_COUNT];
+	SubsysStruct subsys[CMDQ_LEGACY_SUBSYS_COUNT];
+	uint32_t MDPBaseAddress[CMDQ_LEGACY_MDP_BASE_COUNT];
+};
+
+#define CMDQ_IOCTL_QUERY_DTS_LEGACY \
+	_IOW(CMDQ_IOCTL_MAGIC_NUMBER, 11, struct cmdq_legacy_dts_data)
 
 static ssize_t cmdq_driver_dummy_write(struct device *dev,
 				       struct device_attribute *attr, const char *buf, size_t size)
@@ -521,7 +544,8 @@ bool cmdq_driver_support_wait_and_receive_event_in_same_tick(void)
 #endif
 }
 
-static long cmdq_ioctl(struct file *pFile, unsigned int code, unsigned long param)
+static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
+			      unsigned long param, bool legacy)
 {
 	struct cmdqCommandStruct command;
 	struct cmdqJobStruct job;
@@ -538,6 +562,11 @@ static long cmdq_ioctl(struct file *pFile, unsigned int code, unsigned long para
 	case CMDQ_IOCTL_EXEC_COMMAND:
 		if (copy_from_user(&command, (void *)param, sizeof(cmdqCommandStruct)))
 			return -EFAULT;
+
+		/* Legacy secure metadata has a different element layout. */
+		if (legacy && (command.secData.is_secure ||
+			       command.secData.addrMetadataCount))
+			return -EOPNOTSUPP;
 
 		if (command.regRequest.count > CMDQ_MAX_DUMP_REG_COUNT ||
 			!command.blockSize ||
@@ -562,6 +591,11 @@ static long cmdq_ioctl(struct file *pFile, unsigned int code, unsigned long para
 	case CMDQ_IOCTL_ASYNC_JOB_EXEC:
 		if (copy_from_user(&job, (void *)param, sizeof(cmdqJobStruct)))
 			return -EFAULT;
+
+		/* Legacy secure metadata has a different element layout. */
+		if (legacy && (job.command.secData.is_secure ||
+			       job.command.secData.addrMetadataCount))
+			return -EOPNOTSUPP;
 
 		if (job.command.regRequest.count > CMDQ_MAX_DUMP_REG_COUNT ||
 			!job.command.blockSize ||
@@ -829,6 +863,56 @@ static long cmdq_ioctl(struct file *pFile, unsigned int code, unsigned long para
 	return 0;
 }
 
+static long cmdq_ioctl(struct file *pFile, unsigned int code, unsigned long param)
+{
+	return cmdq_ioctl_common(pFile, code, param, false);
+}
+
+static long cmdq_legacy_query_dts(unsigned long param)
+{
+	cmdqDTSDataStruct *src = cmdq_core_get_whole_DTS_Data();
+	struct cmdq_legacy_dts_data __user *dst =
+		(struct cmdq_legacy_dts_data __user *)param;
+
+	/* Copy members separately: the current MDP base follows subsys[38]. */
+	if (copy_to_user(dst->eventTable, src->eventTable,
+			 sizeof(dst->eventTable)) ||
+	    copy_to_user(dst->subsys, src->subsys, sizeof(dst->subsys)) ||
+	    copy_to_user(dst->MDPBaseAddress, src->MDPBaseAddress,
+			 sizeof(dst->MDPBaseAddress))) {
+		CMDQ_ERR("Copy legacy device tree information to user space failed\n");
+		return -EFAULT;
+	}
+
+	return 0;
+}
+
+static long cmdq_legacy_ioctl(struct file *pFile, unsigned int code,
+			      unsigned long param)
+{
+	switch (code) {
+	case CMDQ_IOCTL_QUERY_DTS_LEGACY:
+		return cmdq_legacy_query_dts(param);
+	case CMDQ_IOCTL_QUERY_USAGE:
+	case CMDQ_IOCTL_EXEC_COMMAND:
+	case CMDQ_IOCTL_ASYNC_JOB_EXEC:
+	case CMDQ_IOCTL_ASYNC_JOB_WAIT_AND_CLOSE:
+	case CMDQ_IOCTL_ALLOC_WRITE_ADDRESS:
+	case CMDQ_IOCTL_FREE_WRITE_ADDRESS:
+	case CMDQ_IOCTL_READ_ADDRESS_VALUE:
+	case CMDQ_IOCTL_QUERY_CAP_BITS:
+	case CMDQ_IOCTL_NOTIFY_ENGINE:
+		return cmdq_ioctl_common(pFile, code, param, true);
+	case CMDQ_IOCTL_LOCK_MUTEX:
+	case CMDQ_IOCTL_UNLOCK_MUTEX:
+		CMDQ_ERR("[LEGACY]deprecated ioctl 0x%08x\n", code);
+		return -ENOIOCTLCMD;
+	default:
+		CMDQ_ERR("[LEGACY]unrecognized ioctl 0x%08x\n", code);
+		return -ENOIOCTLCMD;
+	}
+}
+
 #ifdef CONFIG_COMPAT
 static long cmdq_ioctl_compat(struct file *pFile, unsigned int code, unsigned long param)
 {
@@ -857,6 +941,13 @@ static long cmdq_ioctl_compat(struct file *pFile, unsigned int code, unsigned lo
 	CMDQ_ERR("[COMPAT]unrecognized ioctl 0x%08x\n", code);
 	return -ENOIOCTLCMD;
 }
+
+static long cmdq_legacy_ioctl_compat(struct file *pFile, unsigned int code,
+				     unsigned long param)
+{
+	return cmdq_legacy_ioctl(pFile, code,
+				 (unsigned long)compat_ptr(param));
+}
 #endif
 
 
@@ -867,6 +958,16 @@ static const struct file_operations cmdqOP = {
 	.unlocked_ioctl = cmdq_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl = cmdq_ioctl_compat,
+#endif
+};
+
+static const struct file_operations cmdqLegacyOP = {
+	.owner = THIS_MODULE,
+	.open = cmdq_open,
+	.release = cmdq_release,
+	.unlocked_ioctl = cmdq_legacy_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = cmdq_legacy_ioctl_compat,
 #endif
 };
 
@@ -959,6 +1060,10 @@ static int cmdq_probe(struct platform_device *pDevice)
 
 	CMDQ_MSG("CMDQ driver probe begin\n");
 
+	BUILD_BUG_ON(sizeof(SubsysStruct) != 44);
+	BUILD_BUG_ON(sizeof(struct cmdq_legacy_dts_data) != 3720);
+	BUILD_BUG_ON(offsetof(struct cmdq_legacy_dts_data, MDPBaseAddress) != 3716);
+
 	/* Function link */
 	cmdq_virtual_function_setting();
 
@@ -1010,6 +1115,12 @@ static int cmdq_probe(struct platform_device *pDevice)
 	}
 #endif
 
+	/* Compatibility access point for the stock Nougat MDP userspace. */
+	gCmdqLegacyProcEntry = proc_create(CMDQ_DRIVER_DEVICE_NAME, 0644, NULL,
+					  &cmdqLegacyOP);
+	if (NULL == gCmdqLegacyProcEntry)
+		CMDQ_ERR("CMDQ legacy procfs node create failed\n");
+
 	/* proc debug access point */
 	cmdq_create_debug_entries();
 
@@ -1031,6 +1142,10 @@ static int cmdq_probe(struct platform_device *pDevice)
 
 static int cmdq_remove(struct platform_device *pDevice)
 {
+	if (gCmdqLegacyProcEntry) {
+		proc_remove(gCmdqLegacyProcEntry);
+		gCmdqLegacyProcEntry = NULL;
+	}
 	disable_irq(cmdq_dev_get_irq_id());
 
 	device_remove_file(&pDevice->dev, &dev_attr_status);
