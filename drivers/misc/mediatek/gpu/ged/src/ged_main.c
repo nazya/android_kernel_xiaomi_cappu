@@ -183,14 +183,72 @@ static long ged_dispatch(struct file *pFile, GED_BRIDGE_PACKAGE *psBridgePackage
 			pFunc = ged_bridge_vsync_wait;
 			break;
 #endif
+		/*
+		 * GE payloads end in zero-length arrays, so SET_FUNC_AND_CHECK
+		 * validates only their fixed headers. /proc/ged is directly
+		 * ioctl-accessible and libged does not validate these counts;
+		 * make sure handlers cannot step past the bridge buffer.
+		 *
+		 * The history and independent references support a minimum-capacity
+		 * check here:
+		 *
+		 * - Stock cappu DDK1.7 used one 0x3000-byte dispatcher buffer,
+		 *   serialized by ged_dal_sem, but did not validate the GE tail
+		 *   counts. 0x3000 was therefore a dispatcher implementation limit,
+		 *   not a declared GE ABI limit.
+		 * - The DDK1.9 import removed both that shared buffer and its global
+		 *   semaphore and introduced private per-call buffers:
+		 *   https://github.com/iiowoii3389/android_kernel_xiaomi_cappu/commit/e834e17a5fa84cf71f7b16cf7e490300a2259028
+		 *   Independent MediaTek 3.18 code also uses per-call buffers:
+		 *   https://android.googlesource.com/kernel/mediatek/+/9e5996b838eaf1a545efe8f7ad6e708f47e00e0c/drivers/misc/mediatek/gpu/ged/src/ged_main.c
+		 * - An independent MediaTek ALPS 8.1 userspace tree publishes the
+		 *   same fd-based GE ABI with variable tails and no fixed region-count
+		 *   or 0x3000-byte ABI limit:
+		 *   https://gitlab.com/SahilSonar/mediatek-alps/-/blob/eb9041849fcd7c496cfebd389a657850bf16fd8f/libged/include/ged/ged_bridge_id.h
+		 * - MediaTek later added minimum GET/SET tail-capacity checks as an
+		 *   integer-overflow security fix:
+		 *   https://github.com/MotorolaMobilityLLC/kernel-mtk/commit/e4e60807b063f13d53d96ca76ff0d47933f28fbd
+		 *   A later refinement requires exact equality for that newer ABI:
+		 *   https://github.com/MotorolaMobilityLLC/kernel-mtk/commit/4bb18129dcf3b3d1af867e7c283565c46879b76b
+		 *
+		 * Check only the minimum size. Both shipped 32- and 64-bit
+		 * libged.so allocate GET output as sizeof(GED_BRIDGE_IN_GE_GET)
+		 * plus the data, leaving 12 bytes after the actual
+		 * GED_BRIDGE_OUT_GE_GET payload. This surplus is unused and must
+		 * remain accepted, so the newer exact-equality policy cannot be
+		 * copied to this ABI.
+		 *
+		 * The DDK1.9 UAPI declares no additional maximum region count or
+		 * size. gralloc_extra's seven regions are a client layout, not an
+		 * ABI limit. Do not derive a new cap from that layout or from the old
+		 * DDK1.7 dispatcher buffer.
+		 */
 		case GED_BRIDGE_COMMAND_GE_ALLOC:
 			SET_FUNC_AND_CHECK(ged_bridge_ge_alloc, GE_ALLOC);
+			if ((size_t)((GED_BRIDGE_IN_GE_ALLOC *)pvIn)->region_num >
+					((size_t)psBridgePackageKM->i32InBufferSize -
+					sizeof(GED_BRIDGE_IN_GE_ALLOC)) / sizeof(uint32_t)) {
+				GED_LOGE("GE_ALLOC region count does not fit input buffer\n");
+				goto dispatch_exit;
+			}
 			break;
 		case GED_BRIDGE_COMMAND_GE_GET:
 			SET_FUNC_AND_CHECK(ged_bridge_ge_get, GE_GET);
+			if ((size_t)((GED_BRIDGE_IN_GE_GET *)pvIn)->uint32_size >
+					((size_t)psBridgePackageKM->i32OutBufferSize -
+					sizeof(GED_BRIDGE_OUT_GE_GET)) / sizeof(uint32_t)) {
+				GED_LOGE("GE_GET word count does not fit output buffer\n");
+				goto dispatch_exit;
+			}
 			break;
 		case GED_BRIDGE_COMMAND_GE_SET:
 			SET_FUNC_AND_CHECK(ged_bridge_ge_set, GE_SET);
+			if ((size_t)((GED_BRIDGE_IN_GE_SET *)pvIn)->uint32_size >
+					((size_t)psBridgePackageKM->i32InBufferSize -
+					sizeof(GED_BRIDGE_IN_GE_SET)) / sizeof(uint32_t)) {
+				GED_LOGE("GE_SET word count does not fit input buffer\n");
+				goto dispatch_exit;
+			}
 			break;
 		case GED_BRIDGE_COMMAND_GE_INFO:
 			SET_FUNC_AND_CHECK(ged_bridge_ge_info, GE_INFO);
