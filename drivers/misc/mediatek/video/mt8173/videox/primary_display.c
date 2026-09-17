@@ -40,6 +40,7 @@
 #include "ddp_drv.h"
 #include "ddp_reg.h"
 #include "ddp_debug.h"
+#include "ddp_wdma.h"
 #include "ddp_od.h"
 #include "ddp_gamma.h"
 #include "disp_session.h"
@@ -5416,141 +5417,196 @@ LCM_DRIVER *DISP_GetLcmDrv(void)
 }
 
 
-int primary_display_capture_framebuffer_ovl(unsigned long pbuf, unsigned int format)
+static int primary_display_capture_layout(unsigned int width, unsigned int height,
+					  unsigned int format, unsigned int *pitch,
+					  unsigned int *buffer_size)
 {
-	/* unsigned int i = 0; */
-	int ret = 0;
-	cmdqRecHandle cmdq_handle = NULL;
-	cmdqRecHandle cmdq_wait_handle = NULL;
-	disp_ddp_path_config *pconfig = NULL;
-	m4u_client_t *m4uClient = NULL;
+	switch (format) {
+	case eRGB565:
+	case eYUV_420_2P_UYVY:
+	case eRGB888:
+	case eBGR888:
+	case eARGB8888:
+	case eABGR8888:
+	case eBGRA8888:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	*pitch = width * (DP_COLOR_BITS_PER_PIXEL(format) / 8);
+	*buffer_size = *pitch * height;
+	return 0;
+}
+
+int primary_display_get_capture_size(unsigned int format, unsigned int *buffer_size)
+{
+	unsigned int pitch;
+
+	return primary_display_capture_layout(primary_display_get_width(),
+					      primary_display_get_height(), format,
+					      &pitch, buffer_size);
+}
+
+struct primary_display_capture_quarantine {
+	/* Ownership is deliberately retained if reset cannot prove WDMA idle. */
+	void *buffer;
+	m4u_client_t *m4u_client;
+	unsigned int mva;
+};
+
+static struct primary_display_capture_quarantine capture_quarantine;
+
+int primary_display_capture_framebuffer_ovl(void *buffer, unsigned int buffer_capacity,
+					    unsigned int format,
+					    bool *buffer_releasable)
+{
+	cmdqRecHandle config_handle = NULL;
+	disp_ddp_path_config *config;
+	WDMA_CONFIG_STRUCT saved_wdma_config;
+	m4u_client_t *m4u_client = NULL;
+	unsigned int width = primary_display_get_width();
+	unsigned int height = primary_display_get_height();
+	unsigned int pitch;
+	unsigned int frame_size;
 	unsigned int mva = 0;
-	unsigned int w_xres = primary_display_get_width();
-	unsigned int h_yres = primary_display_get_height();
-	/* bpp is either 32 or 16, can not be other value */
-	unsigned int pixel_byte = primary_display_get_bpp() / 8;
-	unsigned int buffer_size = h_yres * w_xres * pixel_byte;
-	/*DISPMSG("primary capture: begin\n"); */
-	DISPERR("primary capture: pbuf = 0x%lx, buffer_size=%d\n", pbuf, buffer_size);
+	int ret;
+
+	*buffer_releasable = true;
+
+	ret = primary_display_capture_layout(width, height, format, &pitch, &frame_size);
+	if (ret)
+		return ret;
+	if (buffer_capacity < frame_size)
+		return -ENOSPC;
 
 	disp_sw_mutex_lock(&(pgc->capture_lock));
 
-	if (primary_display_is_sleepd() || !primary_display_cmdq_enabled()) {
-		memset((void *)pbuf, 0, buffer_size);
-		DISPMSG("primary capture: Fail black End\n");
+	if (capture_quarantine.buffer) {
+		ret = -EIO;
 		goto out;
 	}
 
-	if (_is_decouple_mode(pgc->session_mode) || _is_mirror_mode(pgc->session_mode)) {
-		/* primary_display_capture_framebuffer_decouple(pbuf, format); */
-		memset((void *)pbuf, 0, buffer_size);
-		DISPMSG("primary capture: Fail black for decouple & mirror mode End\n");
+	m4u_client = m4u_create_client();
+	if (IS_ERR(m4u_client)) {
+		ret = PTR_ERR(m4u_client);
+		m4u_client = NULL;
 		goto out;
 	}
 
-	m4uClient = m4u_create_client();
-	if (m4uClient == NULL) {
-		DISPCHECK("primary capture:Fail to alloc  m4uClient\n");
-		ret = -1;
+	ret = m4u_alloc_mva(m4u_client, M4U_PORT_DISP_WDMA0,
+			    (unsigned long)buffer, NULL, frame_size,
+			    M4U_PROT_READ | M4U_PROT_WRITE, 0, &mva);
+	if (ret)
 		goto out;
-	}
 
-	ret =
-	    m4u_alloc_mva(m4uClient, M4U_PORT_DISP_WDMA0, pbuf, NULL, buffer_size,
-			  M4U_PROT_READ | M4U_PROT_WRITE, 0, &mva);
-	if (ret != 0) {
-		DISPCHECK("primary capture:Fail to allocate mva\n");
-		ret = -1;
+	/*
+	 * vzalloc() returns virtually contiguous pages.  M4U maps those pages into
+	 * one device-visible MVA; cleaning here hands ownership to WDMA.
+	 */
+	ret = m4u_cache_sync(m4u_client, M4U_PORT_DISP_WDMA0,
+			     (unsigned long)buffer, frame_size, mva,
+			     M4U_CACHE_FLUSH_BY_RANGE);
+	if (ret)
 		goto out;
-	}
 
-	ret =
-	    m4u_cache_sync(m4uClient, M4U_PORT_DISP_WDMA0, pbuf, buffer_size, mva,
-			   M4U_CACHE_FLUSH_BY_RANGE);
-	if (ret != 0) {
-		DISPCHECK("primary capture:Fail to cach sync\n");
-		ret = -1;
+	ret = cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &config_handle);
+	if (ret)
 		goto out;
+	_cmdq_insert_wait_frame_done_token_mira(config_handle);
+
+	/* Idle power may repurpose WDMA0; serialize only the hardware transaction. */
+	_primary_path_lock(__func__);
+
+	/* The sole caller supplies a zeroed buffer for the legacy black fallback. */
+	if (primary_display_is_sleepd() || !primary_display_cmdq_enabled() ||
+	    _is_decouple_mode(pgc->session_mode) || _is_mirror_mode(pgc->session_mode)) {
+		ret = 0;
+		goto unlock_display;
 	}
 
-	if (primary_display_cmdq_enabled()) {
-		/*create config thread */
-		ret = cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &cmdq_handle);
-		if (ret != 0) {
-			DISPCHECK
-			    ("primary capture:Fail to create primary cmdq handle for capture\n");
-			ret = -1;
-			goto out;
-		}
-		cmdqRecReset(cmdq_handle);
+	config = dpmgr_path_get_last_config(pgc->dpmgr_handle);
 
-		/*create wait thread */
-		ret = cmdqRecCreate(CMDQ_SCENARIO_DISP_SCREEN_CAPTURE, &cmdq_wait_handle);
-		if (ret != 0) {
-			DISPCHECK
-			    ("primary capture:Fail to create primary cmdq wait handle for capture\n");
-			ret = -1;
-			goto out;
-		}
-		cmdqRecReset(cmdq_wait_handle);
+	/*
+	 * Save the shared last_config entry: capture temporarily borrows WDMA0 but
+	 * must not leave its private MVA as the path's remembered destination.
+	 */
+	saved_wdma_config = config->wdma_config;
+	memset(&config->wdma_config, 0, sizeof(config->wdma_config));
+	config->wdma_dirty = 1;
+	config->wdma_config.dstAddress = mva;
+	config->wdma_config.srcHeight = height;
+	config->wdma_config.srcWidth = width;
+	config->wdma_config.clipHeight = height;
+	config->wdma_config.clipWidth = width;
+	config->wdma_config.outputFormat = format;
+	config->wdma_config.useSpecifiedAlpha = 1;
+	config->wdma_config.alpha = 0xff;
+	config->wdma_config.dstPitch = pitch;
+	config->wdma_config.security = DISP_NORMAL_BUFFER;
 
-		/*configure  config thread */
-		_cmdq_insert_wait_frame_done_token_mira(cmdq_handle);
-		dpmgr_path_memout_clock(pgc->dpmgr_handle, 1);
-
-		_primary_path_lock(__func__);
-		pconfig = dpmgr_path_get_last_config(pgc->dpmgr_handle);
-		pconfig->wdma_dirty = 1;
-		pconfig->wdma_config.dstAddress = mva;
-		pconfig->wdma_config.srcHeight = h_yres;
-		pconfig->wdma_config.srcWidth = w_xres;
-		pconfig->wdma_config.clipX = 0;
-		pconfig->wdma_config.clipY = 0;
-		pconfig->wdma_config.clipHeight = h_yres;
-		pconfig->wdma_config.clipWidth = w_xres;
-		pconfig->wdma_config.outputFormat = format;
-		pconfig->wdma_config.useSpecifiedAlpha = 1;
-		pconfig->wdma_config.alpha = 0xFF;
-		pconfig->wdma_config.dstPitch = w_xres * DP_COLOR_BITS_PER_PIXEL(format) / 8;
-		dpmgr_path_add_memout(pgc->dpmgr_handle, ENGINE_OVL0, cmdq_handle);
-		ret = dpmgr_path_config(pgc->dpmgr_handle, pconfig, cmdq_handle);
-		pconfig->wdma_dirty = 0;
-		_primary_path_unlock(__func__);
-		_cmdq_set_config_handle_dirty_mira(cmdq_handle);
-		_cmdq_flush_config_handle_mira(cmdq_handle, 1);
-		DISPMSG("primary capture:Flush add memout mva(0x%x)\n", mva);
-
-		/*wait wdma0 sof */
-		cmdqRecWait(cmdq_wait_handle, CMDQ_EVENT_DISP_WDMA0_SOF);
-		cmdqRecFlush(cmdq_wait_handle);
-		DISPMSG("primary capture:Flush wait wdma sof\n");
-
-		cmdqRecReset(cmdq_handle);
-		_cmdq_insert_wait_frame_done_token_mira(cmdq_handle);
-		_primary_path_lock(__func__);
-		dpmgr_path_remove_memout(pgc->dpmgr_handle, cmdq_handle);
-		_primary_path_unlock(__func__);
-
-		_cmdq_set_config_handle_dirty_mira(cmdq_handle);
-		/* flush remove memory to cmdq */
-		_cmdq_flush_config_handle_mira(cmdq_handle, 1);
-		DISPMSG("primary capture: Flush remove memout\n");
-
-		dpmgr_path_memout_clock(pgc->dpmgr_handle, 0);
+	ret = dpmgr_path_add_memout(pgc->dpmgr_handle, ENGINE_OVL0, config_handle);
+	if (ret) {
+		config->wdma_config = saved_wdma_config;
+		config->wdma_dirty = 0;
+		goto unlock_display;
 	}
+	cmdqCoreClearEvent(CMDQ_EVENT_DISP_WDMA0_EOF);
+	dpmgr_path_config(pgc->dpmgr_handle, config, config_handle);
+	config->wdma_dirty = 0;
+
+	_cmdq_set_config_handle_dirty_mira(config_handle);
+	ret = cmdqRecWait(config_handle, CMDQ_EVENT_DISP_WDMA0_EOF);
+	if (ret)
+		goto remove_memout;
+
+	/* The blocking flush now covers configuration and the complete WDMA frame. */
+	ret = cmdqRecFlush(config_handle);
+
+	if (wdma_capture_stop_sync(DISP_MODULE_WDMA0)) {
+		/*
+		 * A failed reset does not prove that DMA stopped.  Retain this one
+		 * mapping and its pages until reboot instead of allowing WDMA to
+		 * write into freed memory.
+		 */
+		capture_quarantine.buffer = buffer;
+		capture_quarantine.m4u_client = m4u_client;
+		capture_quarantine.mva = mva;
+		*buffer_releasable = false;
+		m4u_client = NULL;
+		mva = 0;
+		ret = -ETIMEDOUT;
+	}
+
+remove_memout:
+	/* Restore routing and clock state even when the retained buffer is quarantined. */
+	dpmgr_path_remove_memout(pgc->dpmgr_handle, NULL);
+	config->wdma_config = saved_wdma_config;
+	config->wdma_dirty = 0;
+	_primary_path_unlock(__func__);
+
+	/*
+	 * The initial flush removed CPU cache lines before DMA.  Invalidate again
+	 * after EOF so copy_to_user() cannot observe a stale speculative fill.
+	 */
+	if (!ret)
+		ret = m4u_cache_sync(m4u_client, M4U_PORT_DISP_WDMA0,
+				     (unsigned long)buffer, frame_size, mva,
+				     M4U_CACHE_INVALID_BY_RANGE);
+	goto out;
+
+unlock_display:
+	_primary_path_unlock(__func__);
 
 out:
-	cmdqRecDestroy(cmdq_handle);
-	cmdqRecDestroy(cmdq_wait_handle);
-	if (mva > 0)
-		m4u_dealloc_mva(m4uClient, M4U_PORT_DISP_WDMA0, mva);
-
-	if (m4uClient != 0)
-		m4u_destroy_client(m4uClient);
+	if (mva)
+		m4u_dealloc_mva(m4u_client, M4U_PORT_DISP_WDMA0, mva);
+	if (m4u_client)
+		m4u_destroy_client(m4u_client);
+	if (config_handle)
+		cmdqRecDestroy(config_handle);
 
 	disp_sw_mutex_unlock(&(pgc->capture_lock));
-	DISPMSG("primary capture: end\n");
-
 	return ret;
 }
 

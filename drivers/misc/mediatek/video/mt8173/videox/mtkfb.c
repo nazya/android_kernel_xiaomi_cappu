@@ -1200,6 +1200,76 @@ void mtkfb_dump_layer_info(void)
 #endif
 }
 
+static unsigned int mtkfb_capture_format(MTK_FB_FORMAT format)
+{
+	switch (format) {
+	case MTK_FB_FORMAT_RGB565:
+		return eRGB565;
+	case MTK_FB_FORMAT_RGB888:
+		return eRGB888;
+	case MTK_FB_FORMAT_BGR888:
+		return eBGR888;
+	case MTK_FB_FORMAT_ARGB8888:
+		return eARGB8888;
+	case MTK_FB_FORMAT_UYVY:
+		/* Despite the legacy alias name, this is packed UYVY at 16 bpp. */
+		return eYUV_420_2P_UYVY;
+	case MTK_FB_FORMAT_ABGR8888:
+	default:
+		/* Preserve the original SLT fallback for unknown format values. */
+		return eABGR8888;
+	}
+}
+
+/*
+ * These legacy ioctls expose a full-screen hardware WDMA capture.  Their ABI
+ * carries only a destination pointer (and, for SLT, a pixel format), so the
+ * actual WDMA payload is width * height * format_bpp.  The old implementation
+ * instead copied framebuffer-bpp bytes and exposed unwritten vmalloc data for
+ * 16- and 24-bpp formats.  wdma_width/wdma_height are historical fields, not a
+ * buffer length; MT8173 has always captured the full primary surface.
+ *
+ * Never pass the userspace address to M4U/WDMA.  Native and compat callers use
+ * the same zeroed kernel buffer, and userspace receives data only after the
+ * display layer has reported a complete, stopped capture.  A future variable-
+ * size ABI must be a new versioned ioctl with explicit capacity and stride.
+ */
+static int mtkfb_capture_to_user(void __user *destination, unsigned int format)
+{
+	unsigned int allocation_size;
+	bool buffer_releasable;
+	void *buffer;
+	int ret;
+
+	if (!destination)
+		return -EFAULT;
+
+	ret = primary_display_get_capture_size(format, &allocation_size);
+	if (ret)
+		return ret;
+
+	buffer = vzalloc(allocation_size);
+	if (!buffer)
+		return -ENOMEM;
+
+	dprec_logger_start(DPREC_LOGGER_WDMA_DUMP, 0, 0);
+	ret = primary_display_capture_framebuffer_ovl(buffer, allocation_size,
+							format, &buffer_releasable);
+	dprec_logger_done(DPREC_LOGGER_WDMA_DUMP, 0, 0);
+	if (ret)
+		goto out;
+
+	if (copy_to_user(destination, buffer, allocation_size))
+		ret = -EFAULT;
+
+out:
+	if (buffer_releasable)
+		vfree(buffer);
+	else
+		DISPERR("primary capture buffer quarantined until reboot\n");
+	return ret;
+}
+
 
 static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 {
@@ -1326,90 +1396,23 @@ static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg
 
 	case MTKFB_CAPTURE_FRAMEBUFFER:
 		{
-			unsigned long dst_pbuf = 0;
-			unsigned long *src_pbuf = 0;
-			unsigned int pixel_bpp = primary_display_get_bpp() / 8;
-			unsigned int fbsize = DISP_GetScreenHeight() * DISP_GetScreenWidth() * pixel_bpp;
+			unsigned long destination;
 
-			if (copy_from_user(&dst_pbuf, (void __user *)arg, sizeof(dst_pbuf))) {
-				MTKFB_ERR("[FB]: copy_from_user failed! line:%d\n", __LINE__);
-				r = -EFAULT;
-			} else {
-				src_pbuf = vmalloc(fbsize);
-				if (!src_pbuf) {
-					MTKFB_LOG("[FB]: vmalloc capture src_pbuf failed! line:%d\n", __LINE__);
-					r = -EFAULT;
-				} else {
-					dprec_logger_start(DPREC_LOGGER_WDMA_DUMP, 0, 0);
-					r = primary_display_capture_framebuffer_ovl((unsigned long)src_pbuf,
-							eBGRA8888);
-					if (r < 0)
-						DISPERR("primary display capture framebuffer failed!\n");
-					dprec_logger_done(DPREC_LOGGER_WDMA_DUMP, 0, 0);
-					if (copy_to_user((unsigned long *)dst_pbuf, src_pbuf, fbsize)) {
-						MTKFB_LOG("[FB]: copy_to_user failed! line:%d\n", __LINE__);
-						r = -EFAULT;
-					}
-					vfree(src_pbuf);
-				}
-			}
+			if (copy_from_user(&destination, argp, sizeof(destination)))
+				return -EFAULT;
 
-			return r;
+			return mtkfb_capture_to_user((void __user *)destination, eBGRA8888);
 		}
 
 	case MTKFB_SLT_AUTO_CAPTURE:
 		{
-			struct fb_slt_catpure capConfig;
-			unsigned long *src_pbuf = 0;
-			unsigned int pixel_bpp = primary_display_get_bpp() / 8;
-			unsigned int fbsize = DISP_GetScreenHeight() * DISP_GetScreenWidth() * pixel_bpp;
+			struct fb_slt_catpure capture;
 
-			if (copy_from_user(&capConfig, (void __user *)arg, sizeof(capConfig))) {
-				MTKFB_ERR("[FB]: copy_from_user failed! line:%d\n", __LINE__);
-				r = -EFAULT;
-			} else {
-				src_pbuf = vmalloc(fbsize);
-				if (!src_pbuf) {
-					MTKFB_LOG("[FB]: vmalloc capture src_pbuf failed! line:%d\n", __LINE__);
-					r = -EFAULT;
-				} else {
-					unsigned int format;
+			if (copy_from_user(&capture, argp, sizeof(capture)))
+				return -EFAULT;
 
-					switch (capConfig.format) {
-					case MTK_FB_FORMAT_RGB888:
-						format = eRGB888;
-						break;
-					case MTK_FB_FORMAT_BGR888:
-						format = eBGR888;
-						break;
-					case MTK_FB_FORMAT_ARGB8888:
-						format = eARGB8888;
-						break;
-					case MTK_FB_FORMAT_RGB565:
-						format = eRGB565;
-						break;
-					case MTK_FB_FORMAT_UYVY:
-						format = eYUV_420_2P_UYVY;
-						break;
-					case MTK_FB_FORMAT_ABGR8888:
-					default:
-						format = eABGR8888;
-						break;
-					}
-					r = primary_display_capture_framebuffer_ovl((unsigned long)
-										src_pbuf,
-										format);
-					if (r < 0)
-						DISPERR("primary display capture framebuffer failed !\n");
-					if (copy_to_user((unsigned long *)capConfig.outputBuffer, src_pbuf, fbsize)) {
-						MTKFB_LOG("[FB]: copy_to_user failed! line:%d\n", __LINE__);
-						r = -EFAULT;
-					}
-					vfree(src_pbuf);
-				}
-			}
-
-			return r;
+			return mtkfb_capture_to_user((void __user *)capture.outputBuffer,
+						     mtkfb_capture_format(capture.format));
 		}
 
 #ifdef MTK_FB_OVERLAY_SUPPORT
@@ -1779,15 +1782,23 @@ static int mtkfb_compat_ioctl(struct fb_info *info, unsigned int cmd, unsigned l
 		}
 	case COMPAT_MTKFB_CAPTURE_FRAMEBUFFER:
 		{
-			compat_ulong_t __user *data32;
-			unsigned long *pbuf;
-			compat_ulong_t l;
+			compat_uptr_t destination;
 
-			data32 = compat_ptr(arg);
-			pbuf = compat_alloc_user_space(sizeof(unsigned long));
-			ret = get_user(l, data32);
-			ret |= put_user(l, pbuf);
-			primary_display_capture_framebuffer_ovl(*pbuf, eBGRA8888);
+			if (get_user(destination, (compat_uptr_t __user *)compat_ptr(arg)))
+				return -EFAULT;
+
+			ret = mtkfb_capture_to_user(compat_ptr(destination), eBGRA8888);
+			break;
+		}
+	case COMPAT_MTKFB_SLT_AUTO_CAPTURE:
+		{
+			struct compat_fb_slt_catpure capture;
+
+			if (copy_from_user(&capture, compat_ptr(arg), sizeof(capture)))
+				return -EFAULT;
+
+			ret = mtkfb_capture_to_user(compat_ptr(capture.outputBuffer),
+						    mtkfb_capture_format(capture.format));
 			break;
 		}
 	case MTKFB_TRIG_OVERLAY_OUT:

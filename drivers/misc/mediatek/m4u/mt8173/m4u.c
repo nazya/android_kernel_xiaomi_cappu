@@ -1029,7 +1029,16 @@ int m4u_cache_sync_by_range(unsigned long va, unsigned int size,
 {
 	int ret = 0;
 
-	if (va < PAGE_OFFSET) {	/* from user space */
+	/*
+	 * arm64 places VMALLOC_START below PAGE_OFFSET.  Classifying solely by
+	 * va < PAGE_OFFSET therefore sends a kernel vmalloc buffer through the
+	 * current process' userspace page tables.  M4U's SG creation/deallocation
+	 * paths already treat vmalloc separately; cache maintenance must use the
+	 * same address classification.
+	 */
+	if (is_vmalloc_addr((void *)va)) {
+		ret = __m4u_cache_sync_kernel((void *)va, size, sync_type);
+	} else if (va < PAGE_OFFSET) {	/* from user space */
 		ret = __m4u_cache_sync_user(va, size, sync_type);
 	} else {
 		ret = __m4u_cache_sync_kernel((void *)va, size, sync_type);

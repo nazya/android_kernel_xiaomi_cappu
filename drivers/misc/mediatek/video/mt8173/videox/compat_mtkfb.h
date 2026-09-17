@@ -49,9 +49,18 @@ struct compat_fb_overlay_layer {
 	compat_int_t ion_fd;	/* 8135 CL 2340210 */
 };
 
+/* 32-bit layout of struct fb_slt_catpure from mtkfb.h. */
+struct compat_fb_slt_catpure {
+	compat_int_t format;
+	compat_uptr_t outputBuffer;
+	compat_uint_t wdma_width;
+	compat_uint_t wdma_height;
+};
+
 #define COMPAT_MTKFB_SET_OVERLAY_LAYER			MTK_IOW(0, struct compat_fb_overlay_layer)
 #define COMPAT_MTKFB_SET_VIDEO_LAYERS			MTK_IOW(2, struct compat_fb_overlay_layer)
 #define COMPAT_MTKFB_CAPTURE_FRAMEBUFFER		MTK_IOW(3, compat_ulong_t)
+#define COMPAT_MTKFB_SLT_AUTO_CAPTURE			MTK_IOWR(27, struct compat_fb_slt_catpure)
 #define COMPAT_MTKFB_GET_POWERSTATE				MTK_IOR(21, compat_ulong_t)
 #define COMPAT_MTKFB_AEE_LAYER_EXIST            MTK_IOR(23, compat_ulong_t)
 #define COMPAT_MTKFB_FACTORY_AUTO_TEST          MTK_IOR(25, compat_ulong_t)

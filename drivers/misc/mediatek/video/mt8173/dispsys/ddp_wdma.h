@@ -29,5 +29,6 @@ enum WDMA_INPUT_FORMAT {
 void wdma_dump_analysis(DISP_MODULE_ENUM module);
 void wdma_dump_reg(DISP_MODULE_ENUM module);
 void wdma_cmdq_insert_wait_frame_done_token_mira(void *handle, int wdma_idx);
+int wdma_capture_stop_sync(DISP_MODULE_ENUM module);
 
 #endif

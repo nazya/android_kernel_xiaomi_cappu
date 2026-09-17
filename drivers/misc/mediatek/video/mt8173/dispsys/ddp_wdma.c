@@ -120,6 +120,32 @@ static int wdma_stop(DISP_MODULE_ENUM module, void *handle)
 	return 0;
 }
 
+/*
+ * Capture owns a temporary MVA.  Disable and reset WDMA synchronously before
+ * that mapping can be released.  A timeout leaves reset asserted so the caller
+ * can retain, rather than free, the still potentially reachable buffer.
+ */
+int wdma_capture_stop_sync(DISP_MODULE_ENUM module)
+{
+	unsigned int delay_cnt;
+	unsigned int idx = wdma_index(module);
+	unsigned int offset = idx * DISP_WDMA_INDEX_OFFSET;
+
+	wdma_stop(module, NULL);
+	DISP_REG_SET(NULL, offset + DISP_REG_WDMA_RST, 1);
+
+	for (delay_cnt = 0; delay_cnt <= 2000; delay_cnt++) {
+		if (DISP_REG_GET(offset + DISP_REG_WDMA_FLOW_CTRL_DBG) & 0x1) {
+			DISP_REG_SET(NULL, offset + DISP_REG_WDMA_RST, 0);
+			return 0;
+		}
+		udelay(10);
+	}
+
+	DDPERR("wdma%d capture stop timeout; keeping reset asserted\n", idx);
+	return -ETIMEDOUT;
+}
+
 static int wdma_reset(DISP_MODULE_ENUM module, void *handle)
 {
 	unsigned int delay_cnt = 0;
