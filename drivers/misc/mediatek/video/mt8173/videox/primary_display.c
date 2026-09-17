@@ -5519,7 +5519,8 @@ int primary_display_capture_framebuffer_ovl(void *buffer, unsigned int buffer_ca
 	_primary_path_lock(__func__);
 
 	/* The sole caller supplies a zeroed buffer for the legacy black fallback. */
-	if (primary_display_is_sleepd() || !primary_display_cmdq_enabled() ||
+	/* pgc->lock is already held; the public state helper takes it again. */
+	if (pgc->state == DISP_SLEPT || !primary_display_cmdq_enabled() ||
 	    _is_decouple_mode(pgc->session_mode) || _is_mirror_mode(pgc->session_mode)) {
 		ret = 0;
 		goto unlock_display;
