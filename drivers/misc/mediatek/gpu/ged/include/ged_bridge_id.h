@@ -286,7 +286,7 @@ typedef struct GED_BRIDGE_OUT_QUERY_TARGET_FPS_TAG {
 
 /* Bridge in structure for GE_ALLOC */
 typedef struct GED_BRIDGE_IN_GE_ALLOC_TAG {
-	int region_num;
+	uint32_t region_num;
 	uint32_t region_sizes[0];
 } GED_BRIDGE_IN_GE_ALLOC;
 
@@ -299,12 +299,12 @@ typedef struct GED_BRIDGE_OUT_GE_ALLOC_TAG {
 /* Bridge in structure for GE_GET */
 typedef struct GED_BRIDGE_IN_GE_GET_TAG {
 	int ge_fd;
-	int region_id;
+	uint32_t region_id;
 	/* Here uint32_* means that the unit is 32bit.
 	 * For example: uint32_offset 1 => offset 4 bytes
 	 */
-	int uint32_offset;
-	int uint32_size;
+	uint32_t uint32_offset;
+	uint32_t uint32_size;
 } GED_BRIDGE_IN_GE_GET;
 
 /* Bridge out structure for GE_GET */
@@ -316,12 +316,12 @@ typedef struct GED_BRIDGE_OUT_GE_GET_TAG {
 /* Bridge in structure for GE_SET */
 typedef struct GED_BRIDGE_IN_GE_SET_TAG {
 	int ge_fd;
-	int region_id;
+	uint32_t region_id;
 	/* Here uint32_* means that the unit is 32bit.
 	 * For example: uint32_offset 1 => offset 4 bytes
 	 */
-	int uint32_offset;
-	int uint32_size;
+	uint32_t uint32_offset;
+	uint32_t uint32_size;
 	uint32_t data[0];
 } GED_BRIDGE_IN_GE_SET;
 

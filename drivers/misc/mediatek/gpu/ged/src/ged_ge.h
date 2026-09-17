@@ -20,8 +20,10 @@
 
 int ged_ge_init(void);
 int ged_ge_exit(void);
-int ged_ge_alloc(int region_num, uint32_t *region_sizes);
-int ged_ge_get(int ge_fd, int region_id, int u32_offset, int u32_size, uint32_t *output_data);
-int ged_ge_set(int ge_fd, int region_id, int u32_offset, int u32_size, uint32_t *input_data);
+int ged_ge_alloc(uint32_t region_num, uint32_t *region_sizes);
+int ged_ge_get(int ge_fd, uint32_t region_id, uint32_t u32_offset,
+		uint32_t u32_size, uint32_t *output_data);
+int ged_ge_set(int ge_fd, uint32_t region_id, uint32_t u32_offset,
+		uint32_t u32_size, uint32_t *input_data);
 
 #endif

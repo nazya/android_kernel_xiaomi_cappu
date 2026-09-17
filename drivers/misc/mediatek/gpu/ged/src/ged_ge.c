@@ -32,9 +32,9 @@ typedef struct {
 	struct file *file;
 	int alloc_fd;
 
-	int region_num;
+	uint32_t region_num;
 	void *data;
-	int *region_sizes; /* sub data */
+	uint32_t *region_sizes; /* sub data */
 	uint32_t **region_data; /* sub data */
 
 	struct list_head ge_entry_list;
@@ -95,7 +95,7 @@ int _ge_debugfs_seq_show(struct seq_file *m, void *v)
 	const GEEntry *entry = v;
 	int memory_size = 0;
 	int memory_ksize = 0;
-	int i;
+	uint32_t i;
 
 	memory_size += (sizeof(uint32_t) + sizeof(uint32_t *)) * entry->region_num;
 	memory_ksize += ksize(entry->data);
@@ -123,7 +123,7 @@ static ssize_t _ge_debugfs_write_entry(const char __user *pszBuffer, size_t uiCo
 static int ge_entry_release(struct inode *inode, struct file *file)
 {
 	unsigned long flags;
-	int i;
+	uint32_t i;
 	GEEntry *entry = file->private_data;
 
 	spin_lock_irqsave(&ge_entry_list_lock, flags);
@@ -169,10 +169,10 @@ int ged_ge_exit(void)
 	return 0;
 }
 
-int ged_ge_alloc(int region_num, uint32_t *region_sizes)
+int ged_ge_alloc(uint32_t region_num, uint32_t *region_sizes)
 {
 	unsigned long flags;
-	int i;
+	uint32_t i;
 	GEEntry *entry = (GEEntry *)kmem_cache_zalloc(gPoolCache, GFP_KERNEL);
 
 	if (!entry) {
@@ -201,7 +201,7 @@ int ged_ge_alloc(int region_num, uint32_t *region_sizes)
 		goto err_kmalloc;
 	}
 
-	entry->region_sizes = (uint32_t *)entry->data;
+	entry->region_sizes = entry->data;
 	entry->region_data = (uint32_t **)(entry->region_sizes + region_num);
 	for (i = 0; i < region_num; ++i)
 		entry->region_sizes[i] = region_sizes[i];
@@ -227,32 +227,48 @@ err_entry:
 
 static void dump_ge_regions(GEEntry *entry)
 {
-	int i;
+	uint32_t i;
 
 	for (i = 0; i < entry->region_num; ++i)
-		GE_PERR("ged_ge dump, %d/%d, s %d\n", i, entry->region_num, entry->region_sizes[i]);
+		GE_PERR("ged_ge dump, %u/%u, s %u\n", i, entry->region_num, entry->region_sizes[i]);
 }
 
-static int valid_parameters(GEEntry *entry, int region_id, int u32_offset, int u32_size)
+/*
+ * Region sizes are byte counts, while offsets and lengths are counts of
+ * uint32_t words.  None can be negative, so keep their bridge and kernel
+ * representations unsigned.  This preserves the four-byte field layout used
+ * by prebuilt clients; a legacy negative bit pattern becomes a large value
+ * and fails the bounds check below.
+ *
+ * The old (offset + size) * sizeof(uint32_t) expression could overflow before
+ * it was compared with the region size.  Convert the byte capacity to complete
+ * words instead, validate the offset, and compare the length with the remaining
+ * words.  Short-circuit evaluation makes the subtraction safe, a trailing
+ * partial word remains inaccessible, and constant division by four compiles to
+ * a shift rather than a hardware divide.
+ */
+static int valid_parameters(GEEntry *entry, uint32_t region_id,
+		uint32_t u32_offset, uint32_t u32_size)
 {
-	if (region_id < 0 || region_id >= entry->region_num ||
-		u32_offset < 0 || u32_size < 0 ||
-		u32_offset * sizeof(uint32_t) > entry->region_sizes[region_id] ||
-		(u32_offset + u32_size) * sizeof(uint32_t) > entry->region_sizes[region_id]
-		) {
+	if (region_id < entry->region_num) {
+		uint32_t region_words = entry->region_sizes[region_id] /
+				sizeof(uint32_t);
 
-		GE_PERR("fail, invalid r_id %d, o %d, s %d\n",
-				region_id, u32_offset, u32_size);
-
-		dump_ge_regions(entry);
-
-		return -EFAULT;
+		if (u32_offset <= region_words &&
+			u32_size <= region_words - u32_offset)
+			return 0;
 	}
 
-	return 0;
+	GE_PERR("fail, invalid r_id %u, o %u, s %u\n",
+			region_id, u32_offset, u32_size);
+
+	dump_ge_regions(entry);
+
+	return -EFAULT;
 }
 
-int ged_ge_get(int ge_fd, int region_id, int u32_offset, int u32_size, uint32_t *output_data)
+int ged_ge_get(int ge_fd, uint32_t region_id, uint32_t u32_offset,
+		uint32_t u32_size, uint32_t *output_data)
 {
 	unsigned long flags;
 	int err = 0;
@@ -291,7 +307,8 @@ err_parameter:
 	return err;
 }
 
-int ged_ge_set(int ge_fd, int region_id, int u32_offset, int u32_size, uint32_t *input_data)
+int ged_ge_set(int ge_fd, uint32_t region_id, uint32_t u32_offset,
+		uint32_t u32_size, uint32_t *input_data)
 {
 	unsigned long flags;
 	int err = 0;
@@ -319,7 +336,7 @@ int ged_ge_set(int ge_fd, int region_id, int u32_offset, int u32_size, uint32_t 
 		spin_unlock_irqrestore(&ge_raf_lock, flags);
 		data = kzalloc(entry->region_sizes[region_id], GFP_KERNEL);
 		if (!data) {
-			GE_PERR("kmalloc fail, size: %d\n", entry->region_sizes[region_id]);
+			GE_PERR("kmalloc fail, size: %u\n", entry->region_sizes[region_id]);
 			err = -EFAULT;
 			goto err_parameter;
 		}
@@ -395,4 +412,3 @@ int ged_bridge_ge_info(GED_BRIDGE_IN_GE_INFO *psINFO_IN, GED_BRIDGE_OUT_GE_INFO 
 
 	return 0;
 }
-
