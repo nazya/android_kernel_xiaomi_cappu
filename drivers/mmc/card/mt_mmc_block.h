@@ -119,7 +119,7 @@ struct mt_bio_context {
 	int id;
 	int state;
 	pid_t pid;
-	char comm[TASK_COMM_LEN+1];
+	char comm[TASK_COMM_LEN];
 	u32 qid;
 	spinlock_t lock;
 	uint64_t period_start_t;

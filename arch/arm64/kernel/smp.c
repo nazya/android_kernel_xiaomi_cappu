@@ -167,7 +167,7 @@ static void smp_store_cpu_info(unsigned int cpuid)
  * This is the secondary CPU boot entry.  We're using this CPUs
  * idle thread stack, but a set of temporary page tables.
  */
-asmlinkage void secondary_start_kernel(void)
+asmlinkage notrace void secondary_start_kernel(void)
 {
 	struct mm_struct *mm = &init_mm;
 	unsigned int cpu = smp_processor_id();
@@ -251,8 +251,6 @@ asmlinkage void secondary_start_kernel(void)
 	complete(&cpu_running);
 
 	aee_rr_rec_hotplug_footprint(cpu, 13);
-
-	local_dbg_enable();
 
 	aee_rr_rec_hotplug_footprint(cpu, 14);
 

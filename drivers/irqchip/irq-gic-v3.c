@@ -130,7 +130,7 @@ static void gic_enable_redist(void)
 	writel_relaxed(val, rbase + GICR_WAKER);
 
 	while (readl_relaxed(rbase + GICR_WAKER) & GICR_WAKER_ChildrenAsleep) {
-		count--;
+		--count;
 		if (!count) {
 			pr_err_ratelimited("redist didn't wake up...\n");
 			return;
@@ -454,17 +454,21 @@ out:
 	return tlist;
 }
 
+#define MPIDR_TO_SGI_AFFINITY(cluster_id, level) \
+	(MPIDR_AFFINITY_LEVEL(cluster_id, level) \
+		<< ICC_SGI1R_AFFINITY_## level ##_SHIFT)
+
 static void gic_send_sgi(u64 cluster_id, u16 tlist, unsigned int irq)
 {
 	u64 val;
 
-	val = (MPIDR_AFFINITY_LEVEL(cluster_id, 3) << 48	|
-		MPIDR_AFFINITY_LEVEL(cluster_id, 2) << 32	|
-		irq << 24					|
-		MPIDR_AFFINITY_LEVEL(cluster_id, 1) << 16	|
-		tlist);
+	val = (MPIDR_TO_SGI_AFFINITY(cluster_id, 3)	|
+	       MPIDR_TO_SGI_AFFINITY(cluster_id, 2)	|
+	       irq << ICC_SGI1R_SGI_ID_SHIFT		|
+	       MPIDR_TO_SGI_AFFINITY(cluster_id, 1)	|
+	       tlist << ICC_SGI1R_TARGET_LIST_SHIFT);
 
-	pr_debug("CPU%d: ICC_SGI1R_EL1 %llx\n", smp_processor_id(), val);
+	pr_devel("CPU%d: ICC_SGI1R_EL1 %llx\n", smp_processor_id(), val);
 	gic_write_sgi1r(val);
 }
 
@@ -479,7 +483,7 @@ static void gic_raise_softirq(const struct cpumask *mask, unsigned int irq)
 	 * Ensure that stores to Normal memory are visible to the
 	 * other CPUs before issuing the IPI.
 	 */
-	smp_wmb();
+	wmb();
 
 	for_each_cpu_mask(cpu, *mask) {
 		unsigned long cluster_id = cpu_logical_map(cpu) & ~0xffUL;
@@ -506,6 +510,9 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 	void __iomem *reg;
 	int enabled;
 	u64 val;
+
+	if (cpu >= nr_cpu_ids)
+		return -EINVAL;
 
 #ifndef CONFIG_MTK_IRQ_NEW_DESIGN
 	if (gic_irq_in_rdist(d))
@@ -770,4 +777,3 @@ out_unmap_dist:
 }
 
 IRQCHIP_DECLARE(gic_v3, "arm,gic-v3", gic_of_init);
-
