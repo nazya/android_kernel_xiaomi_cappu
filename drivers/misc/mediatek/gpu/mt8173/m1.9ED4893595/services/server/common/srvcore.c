@@ -1108,6 +1108,14 @@ PVRSRV_ERROR BridgedDispatchKM(CONNECTION_DATA * psConnection,
 		goto unlock_and_return_error;
 	}
 
+	/*
+	 * Pool entries are reused, and several handlers leave reply fields
+	 * untouched on an error path while the dispatcher still copies the
+	 * whole declared reply back.  Clear the declared reply range so it
+	 * cannot carry a previous call's data.
+	 */
+	OSCachedMemSet(psBridgeOut, 0, psBridgePackageKM->ui32OutBufferSize);
+
 	if((CopyFromUserWrapper (psConnection,
 					ui32DispatchTableEntry,
 					psBridgeIn,
