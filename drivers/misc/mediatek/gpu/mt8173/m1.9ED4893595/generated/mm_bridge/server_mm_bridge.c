@@ -937,14 +937,23 @@ PVRSRVBridgePhysmemNewRamBackedPMR(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psPhysmemNewRamBackedPMRIN->ui32NumPhysChunks * sizeof(IMG_UINT32)) +
-			(psPhysmemNewRamBackedPMRIN->ui32AnnotationLength * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psPhysmemNewRamBackedPMRIN->ui32NumPhysChunks * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psPhysmemNewRamBackedPMRIN->ui32AnnotationLength * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psPhysmemNewRamBackedPMROUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto PhysmemNewRamBackedPMR_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -1094,14 +1103,23 @@ PVRSRVBridgePhysmemNewRamBackedLockedPMR(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psPhysmemNewRamBackedLockedPMRIN->ui32NumVirtChunks * sizeof(IMG_UINT32)) +
-			(psPhysmemNewRamBackedLockedPMRIN->ui32AnnotationLength * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psPhysmemNewRamBackedLockedPMRIN->ui32NumVirtChunks * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psPhysmemNewRamBackedLockedPMRIN->ui32AnnotationLength * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psPhysmemNewRamBackedLockedPMROUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto PhysmemNewRamBackedLockedPMR_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -2341,14 +2359,23 @@ PVRSRVBridgeChangeSparseMem(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psChangeSparseMemIN->ui32AllocPageCount * sizeof(IMG_UINT32)) +
-			(psChangeSparseMemIN->ui32FreePageCount * sizeof(IMG_UINT32)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psChangeSparseMemIN->ui32AllocPageCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psChangeSparseMemIN->ui32FreePageCount * sizeof(IMG_UINT32)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psChangeSparseMemOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto ChangeSparseMem_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -2857,14 +2884,23 @@ PVRSRVBridgeHeapCfgHeapConfigName(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psHeapCfgHeapConfigNameIN->ui32HeapConfigNameBufSz * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psHeapCfgHeapConfigNameIN->ui32HeapConfigNameBufSz * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 	psHeapCfgHeapConfigNameOUT->puiHeapConfigName = psHeapCfgHeapConfigNameIN->puiHeapConfigName;
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psHeapCfgHeapConfigNameOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto HeapCfgHeapConfigName_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -2955,14 +2991,23 @@ PVRSRVBridgeHeapCfgHeapDetails(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psHeapCfgHeapDetailsIN->ui32HeapNameBufSz * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psHeapCfgHeapDetailsIN->ui32HeapNameBufSz * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 	psHeapCfgHeapDetailsOUT->puiHeapNameOut = psHeapCfgHeapDetailsIN->puiHeapNameOut;
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psHeapCfgHeapDetailsOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto HeapCfgHeapDetails_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{

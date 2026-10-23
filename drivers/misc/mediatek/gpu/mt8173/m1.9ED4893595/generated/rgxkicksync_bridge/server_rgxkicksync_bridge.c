@@ -257,24 +257,33 @@ PVRSRVBridgeRGXKickSync(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psRGXKickSyncIN->ui32ClientFenceCount * sizeof(SYNC_PRIMITIVE_BLOCK *)) +
-			(psRGXKickSyncIN->ui32ClientFenceCount * sizeof(IMG_HANDLE)) +
-			(psRGXKickSyncIN->ui32ClientFenceCount * sizeof(IMG_UINT32)) +
-			(psRGXKickSyncIN->ui32ClientFenceCount * sizeof(IMG_UINT32)) +
-			(psRGXKickSyncIN->ui32ClientUpdateCount * sizeof(SYNC_PRIMITIVE_BLOCK *)) +
-			(psRGXKickSyncIN->ui32ClientUpdateCount * sizeof(IMG_HANDLE)) +
-			(psRGXKickSyncIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) +
-			(psRGXKickSyncIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) +
-			(psRGXKickSyncIN->ui32ServerSyncCount * sizeof(IMG_UINT32)) +
-			(psRGXKickSyncIN->ui32ServerSyncCount * sizeof(SERVER_SYNC_PRIMITIVE *)) +
-			(psRGXKickSyncIN->ui32ServerSyncCount * sizeof(IMG_HANDLE)) +
-			(32 * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psRGXKickSyncIN->ui32ClientFenceCount * sizeof(SYNC_PRIMITIVE_BLOCK *)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ClientFenceCount * sizeof(IMG_HANDLE)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ClientFenceCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ClientFenceCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ClientUpdateCount * sizeof(SYNC_PRIMITIVE_BLOCK *)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ClientUpdateCount * sizeof(IMG_HANDLE)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ServerSyncCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ServerSyncCount * sizeof(SERVER_SYNC_PRIMITIVE *)) +
+			((IMG_UINT64) psRGXKickSyncIN->ui32ServerSyncCount * sizeof(IMG_HANDLE)) +
+			((IMG_UINT64) 32 * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psRGXKickSyncOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto RGXKickSync_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{

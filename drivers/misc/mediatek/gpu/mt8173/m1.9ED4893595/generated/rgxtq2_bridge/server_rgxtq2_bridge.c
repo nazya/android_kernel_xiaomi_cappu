@@ -88,9 +88,10 @@ PVRSRVBridgeRGXTDMCreateTransferContext(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psRGXTDMCreateTransferContextIN->ui32FrameworkCmdize * sizeof(IMG_BYTE)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psRGXTDMCreateTransferContextIN->ui32FrameworkCmdize * sizeof(IMG_BYTE)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 	{
 		PVRSRV_DEVICE_NODE *psDeviceNode = OSGetDevData(psConnection);
@@ -107,6 +108,14 @@ PVRSRVBridgeRGXTDMCreateTransferContext(IMG_UINT32 ui32DispatchTableEntry,
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psRGXTDMCreateTransferContextOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto RGXTDMCreateTransferContext_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -353,24 +362,25 @@ PVRSRVBridgeRGXTDMSubmitTransfer(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psRGXTDMSubmitTransferIN->ui32ClientFenceCount * sizeof(SYNC_PRIMITIVE_BLOCK *)) +
-			(psRGXTDMSubmitTransferIN->ui32ClientFenceCount * sizeof(IMG_HANDLE)) +
-			(psRGXTDMSubmitTransferIN->ui32ClientFenceCount * sizeof(IMG_UINT32)) +
-			(psRGXTDMSubmitTransferIN->ui32ClientFenceCount * sizeof(IMG_UINT32)) +
-			(psRGXTDMSubmitTransferIN->ui32ClientUpdateCount * sizeof(SYNC_PRIMITIVE_BLOCK *)) +
-			(psRGXTDMSubmitTransferIN->ui32ClientUpdateCount * sizeof(IMG_HANDLE)) +
-			(psRGXTDMSubmitTransferIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) +
-			(psRGXTDMSubmitTransferIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) +
-			(psRGXTDMSubmitTransferIN->ui32ServerSyncCount * sizeof(IMG_UINT32)) +
-			(psRGXTDMSubmitTransferIN->ui32ServerSyncCount * sizeof(SERVER_SYNC_PRIMITIVE *)) +
-			(psRGXTDMSubmitTransferIN->ui32ServerSyncCount * sizeof(IMG_HANDLE)) +
-			(32 * sizeof(IMG_CHAR)) +
-			(psRGXTDMSubmitTransferIN->ui32CommandSize * sizeof(IMG_UINT8)) +
-			(psRGXTDMSubmitTransferIN->ui32SyncPMRCount * sizeof(IMG_UINT32)) +
-			(psRGXTDMSubmitTransferIN->ui32SyncPMRCount * sizeof(PMR *)) +
-			(psRGXTDMSubmitTransferIN->ui32SyncPMRCount * sizeof(IMG_HANDLE)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ClientFenceCount * sizeof(SYNC_PRIMITIVE_BLOCK *)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ClientFenceCount * sizeof(IMG_HANDLE)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ClientFenceCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ClientFenceCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ClientUpdateCount * sizeof(SYNC_PRIMITIVE_BLOCK *)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ClientUpdateCount * sizeof(IMG_HANDLE)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ServerSyncCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ServerSyncCount * sizeof(SERVER_SYNC_PRIMITIVE *)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32ServerSyncCount * sizeof(IMG_HANDLE)) +
+			((IMG_UINT64) 32 * sizeof(IMG_CHAR)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32CommandSize * sizeof(IMG_UINT8)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32SyncPMRCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32SyncPMRCount * sizeof(PMR *)) +
+			((IMG_UINT64) psRGXTDMSubmitTransferIN->ui32SyncPMRCount * sizeof(IMG_HANDLE)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 	{
 		PVRSRV_DEVICE_NODE *psDeviceNode = OSGetDevData(psConnection);
@@ -387,6 +397,14 @@ PVRSRVBridgeRGXTDMSubmitTransfer(IMG_UINT32 ui32DispatchTableEntry,
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psRGXTDMSubmitTransferOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto RGXTDMSubmitTransfer_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{

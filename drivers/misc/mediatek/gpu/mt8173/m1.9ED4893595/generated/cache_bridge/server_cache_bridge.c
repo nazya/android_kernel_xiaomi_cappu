@@ -89,18 +89,27 @@ PVRSRVBridgeCacheOpQueue(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psCacheOpQueueIN->ui32NumCacheOps * sizeof(PMR *)) +
-			(psCacheOpQueueIN->ui32NumCacheOps * sizeof(IMG_HANDLE)) +
-			(psCacheOpQueueIN->ui32NumCacheOps * sizeof(IMG_UINT64)) +
-			(psCacheOpQueueIN->ui32NumCacheOps * sizeof(IMG_DEVMEM_OFFSET_T)) +
-			(psCacheOpQueueIN->ui32NumCacheOps * sizeof(IMG_DEVMEM_SIZE_T)) +
-			(psCacheOpQueueIN->ui32NumCacheOps * sizeof(PVRSRV_CACHE_OP)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psCacheOpQueueIN->ui32NumCacheOps * sizeof(PMR *)) +
+			((IMG_UINT64) psCacheOpQueueIN->ui32NumCacheOps * sizeof(IMG_HANDLE)) +
+			((IMG_UINT64) psCacheOpQueueIN->ui32NumCacheOps * sizeof(IMG_UINT64)) +
+			((IMG_UINT64) psCacheOpQueueIN->ui32NumCacheOps * sizeof(IMG_DEVMEM_OFFSET_T)) +
+			((IMG_UINT64) psCacheOpQueueIN->ui32NumCacheOps * sizeof(IMG_DEVMEM_SIZE_T)) +
+			((IMG_UINT64) psCacheOpQueueIN->ui32NumCacheOps * sizeof(PVRSRV_CACHE_OP)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psCacheOpQueueOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto CacheOpQueue_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{

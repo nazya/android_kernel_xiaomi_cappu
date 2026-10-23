@@ -88,13 +88,22 @@ PVRSRVBridgeDevicememHistoryMap(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psDevicememHistoryMapOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto DevicememHistoryMap_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -232,13 +241,22 @@ PVRSRVBridgeDevicememHistoryUnmap(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psDevicememHistoryUnmapOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto DevicememHistoryUnmap_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -374,14 +392,23 @@ PVRSRVBridgeDevicememHistoryMapVRange(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psDevicememHistoryMapVRangeOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto DevicememHistoryMapVRange_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -476,14 +503,23 @@ PVRSRVBridgeDevicememHistoryUnmapVRange(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psDevicememHistoryUnmapVRangeOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto DevicememHistoryUnmapVRange_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -582,15 +618,24 @@ PVRSRVBridgeDevicememHistorySparseChange(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
-			(psDevicememHistorySparseChangeIN->ui32AllocPageCount * sizeof(IMG_UINT32)) +
-			(psDevicememHistorySparseChangeIN->ui32FreePageCount * sizeof(IMG_UINT32)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) DEVICEMEM_HISTORY_TEXT_BUFSZ * sizeof(IMG_CHAR)) +
+			((IMG_UINT64) psDevicememHistorySparseChangeIN->ui32AllocPageCount * sizeof(IMG_UINT32)) +
+			((IMG_UINT64) psDevicememHistorySparseChangeIN->ui32FreePageCount * sizeof(IMG_UINT32)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psDevicememHistorySparseChangeOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto DevicememHistorySparseChange_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{

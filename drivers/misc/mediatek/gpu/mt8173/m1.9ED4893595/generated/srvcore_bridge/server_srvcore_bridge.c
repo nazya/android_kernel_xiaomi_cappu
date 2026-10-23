@@ -590,13 +590,22 @@ PVRSRVBridgeAlignmentCheck(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psAlignmentCheckIN->ui32AlignChecksSize * sizeof(IMG_UINT32)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psAlignmentCheckIN->ui32AlignChecksSize * sizeof(IMG_UINT32)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psAlignmentCheckOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto AlignmentCheck_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -789,15 +798,24 @@ PVRSRVBridgeFindProcessMemStats(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT32 ui32BufferSize = 
-			(psFindProcessMemStatsIN->ui32ArrSize * sizeof(IMG_UINT32)) +
+	IMG_UINT64 ui64BufferSize = 
+			((IMG_UINT64) psFindProcessMemStatsIN->ui32ArrSize * sizeof(IMG_UINT32)) +
 			0;
+	IMG_UINT32 ui32BufferSize = 0;
 
 
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 
 	psFindProcessMemStatsOUT->pui32MemStatsArray = psFindProcessMemStatsIN->pui32MemStatsArray;
 
+
+	if (ui64BufferSize > IMG_UINT32_MAX)
+	{
+		psFindProcessMemStatsOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
+		goto FindProcessMemStats_exit;
+	}
+
+	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
