@@ -49,6 +49,13 @@ static LIST_HEAD(cpufreq_policy_list);
 /* This one keeps track of the previously set governor of a removed CPU */
 static DEFINE_PER_CPU(char[CPUFREQ_NAME_LEN], cpufreq_cpu_governor);
 
+/*
+ * These keep the user's limits of a policy whose CPUs were all removed,
+ * indexed by the first CPU of the policy
+ */
+static DEFINE_PER_CPU(unsigned int, cpufreq_cpu_user_min);
+static DEFINE_PER_CPU(unsigned int, cpufreq_cpu_user_max);
+
 /* Flag to suspend/resume CPUFreq governors */
 static bool cpufreq_suspended;
 
@@ -1141,7 +1148,7 @@ static void aee_record_cpufreq_cb_wrap(unsigned int step)
 
 static int __cpufreq_add_dev(struct device *dev, struct subsys_interface *sif)
 {
-	unsigned int j, cpu = dev->id;
+	unsigned int j, first, cpu = dev->id;
 	int ret = -ENOMEM;
 	struct cpufreq_policy *policy;
 	unsigned long flags;
@@ -1231,6 +1238,13 @@ static int __cpufreq_add_dev(struct device *dev, struct subsys_interface *sif)
 	 * managing offline cpus here.
 	 */
 	cpumask_and(policy->cpus, policy->cpus, cpu_online_mask);
+
+	/* Restore the limits the user set before the policy's CPUs went away */
+	first = cpumask_first(policy->related_cpus);
+	if (per_cpu(cpufreq_cpu_user_max, first)) {
+		policy->min = per_cpu(cpufreq_cpu_user_min, first);
+		policy->max = per_cpu(cpufreq_cpu_user_max, first);
+	}
 
 	if (!recover_policy) {
 		policy->user_policy.min = policy->min;
@@ -1435,7 +1449,7 @@ static int __cpufreq_remove_dev_prepare(struct device *dev,
 static int __cpufreq_remove_dev_finish(struct device *dev,
 				       struct subsys_interface *sif)
 {
-	unsigned int cpu = dev->id, cpus;
+	unsigned int first, cpu = dev->id, cpus;
 	int ret;
 	unsigned long flags;
 	struct cpufreq_policy *policy;
@@ -1453,8 +1467,13 @@ static int __cpufreq_remove_dev_finish(struct device *dev,
 	down_write(&policy->rwsem);
 	cpus = cpumask_weight(policy->cpus);
 
-	if (cpus > 1)
+	if (cpus > 1) {
 		cpumask_clear_cpu(cpu, policy->cpus);
+	} else {
+		first = cpumask_first(policy->related_cpus);
+		per_cpu(cpufreq_cpu_user_min, first) = policy->user_policy.min;
+		per_cpu(cpufreq_cpu_user_max, first) = policy->user_policy.max;
+	}
 	up_write(&policy->rwsem);
 
 	/* If cpu is last user of policy, free policy */
