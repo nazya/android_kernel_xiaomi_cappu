@@ -166,6 +166,7 @@ static struct JpegClk gJpegClk;
 static wait_queue_head_t dec_wait_queue;
 static spinlock_t jpeg_dec_lock;
 static int dec_status;
+static unsigned int *dec_owner;	/* private data of the file that owns the decoder */
 #endif
 
 #ifdef JPEG_PM_DOMAIN_ENABLE
@@ -177,6 +178,7 @@ struct platform_device *pjenc_dev;
 static wait_queue_head_t enc_wait_queue;
 static spinlock_t jpeg_enc_lock;
 static int enc_status;
+static unsigned int *enc_owner;	/* private data of the file that owns the encoder */
 
 /* ========================================== */
 /* CMDQ */
@@ -356,7 +358,7 @@ void jpeg_drv_enc_power_off(void)
 
 
 #ifdef JPEG_DEC_DRIVER
-static int jpeg_drv_dec_init(void)
+static int jpeg_drv_dec_init(unsigned int *owner)
 {
 	int retValue;
 
@@ -367,6 +369,7 @@ static int jpeg_drv_dec_init(void)
 		retValue = -EBUSY;
 	} else {
 		dec_status = 1;
+		dec_owner = owner;
 		retValue = 0;
 	}
 	spin_unlock(&jpeg_dec_lock);
@@ -385,6 +388,7 @@ static void jpeg_drv_dec_deinit(void)
 
 		spin_lock(&jpeg_dec_lock);
 		dec_status = 0;
+		dec_owner = NULL;
 		spin_unlock(&jpeg_dec_lock);
 
 		jpeg_drv_dec_reset();
@@ -394,7 +398,7 @@ static void jpeg_drv_dec_deinit(void)
 }
 #endif
 
-static int jpeg_drv_enc_init(void)
+static int jpeg_drv_enc_init(unsigned int *owner)
 {
 	int retValue;
 
@@ -404,6 +408,7 @@ static int jpeg_drv_enc_init(void)
 		retValue = -EBUSY;
 	} else {
 		enc_status = 1;
+		enc_owner = owner;
 		retValue = 0;
 	}
 	spin_unlock(&jpeg_enc_lock);
@@ -421,6 +426,7 @@ static void jpeg_drv_enc_deinit(void)
 	if (enc_status != 0) {
 		spin_lock(&jpeg_enc_lock);
 		enc_status = 0;
+		enc_owner = NULL;
 		spin_unlock(&jpeg_enc_lock);
 
 		jpeg_drv_enc_reset();
@@ -476,7 +482,7 @@ static int jpeg_dec_ioctl(unsigned int cmd, unsigned long arg, struct file *file
 		/* initial and reset JPEG encoder */
 	case JPEG_DEC_IOCTL_INIT:	/* OT:OK */
 		/*JPEG_MSG("[JPEGDRV][IOCTL] JPEG Decoder Init!!\n");*/
-		if (jpeg_drv_dec_init() == 0)
+		if (jpeg_drv_dec_init(pStatus) == 0)
 			*pStatus = JPEG_DEC_PROCESS;
 		break;
 
@@ -605,6 +611,11 @@ static int jpeg_dec_ioctl(unsigned int cmd, unsigned long arg, struct file *file
 
 	case JPEG_DEC_IOCTL_START:	/* OT:OK */
 		/*JPEG_MSG("[JPEGDRV][IOCTL] JPEG Decoder Start!!\n");*/
+		/* Only the owner may start it, as for the encoder and in MediaTek's later driver */
+		if (*pStatus != JPEG_DEC_PROCESS) {
+			JPEG_WRN("Permission Denied! This process can not access decoder");
+			return -EFAULT;
+		}
 
 		jpeg_drv_dec_start();
 		break;
@@ -684,6 +695,10 @@ static int jpeg_dec_ioctl(unsigned int cmd, unsigned long arg, struct file *file
 
 	case JPEG_DEC_IOCTL_DUMP_REG:
 		JPEG_MSG("[JPEGDRV][IOCTL] JPEG Decoder DUMP REGISTER !!\n");
+		if (*pStatus != JPEG_DEC_PROCESS) {
+			JPEG_WRN("Permission Denied! This process can not access decoder");
+			return -EFAULT;
+		}
 		jpeg_drv_dec_dump_reg();
 		break;
 
@@ -746,7 +761,7 @@ static int jpeg_enc_ioctl(unsigned int cmd, unsigned long arg, struct file *file
 	case JPEG_ENC_IOCTL_INIT:
 		/*JPEG_MSG("[JPEGDRV][IOCTL] JPEG Encoder Init!!\n");*/
 
-		retValue = jpeg_drv_enc_init();
+		retValue = jpeg_drv_enc_init(pStatus);
 
 		if (retValue == 0)
 			*pStatus = JPEG_ENC_PROCESS;
@@ -1212,9 +1227,33 @@ static ssize_t jpeg_read(struct file *file, char __user *data, size_t len, loff_
 	return 0;
 }
 
+/*
+ * Deinit the engines this file still owns when its user went away without
+ * DEINIT, for example a camera provider that exited mid-capture. The owner
+ * pointers decide this, not the per-file status, because suspend deinits the
+ * engines without touching any file. MediaTek's later driver keeps this
+ * cleanup only in .flush, with the copy in release commented out.
+ */
+static void jpeg_release_owned(unsigned int *pStatus)
+{
+	if (enc_owner == pStatus) {
+		JPEG_WRN("Error! Enable error handling for jpeg encoder");
+		jpeg_drv_enc_deinit();
+	}
+#ifdef JPEG_DEC_DRIVER
+	if (dec_owner == pStatus) {
+		JPEG_WRN("Error! Enable error handling for jpeg decoder");
+		jpeg_drv_dec_deinit();
+	}
+#endif
+	*pStatus = 0;
+}
+
 static int jpeg_release(struct inode *inode, struct file *file)
 {
 	if (NULL != file->private_data) {
+		/* /proc/mtk_jpeg never calls .flush, so clean up here */
+		jpeg_release_owned(file->private_data);
 		kfree(file->private_data);
 		file->private_data = NULL;
 	}
@@ -1232,20 +1271,7 @@ static int jpeg_flush(struct file *a_pstFile, fl_owner_t a_id)
 		return -EFAULT;
 	}
 
-	if (*pStatus == JPEG_ENC_PROCESS) {
-		if (enc_status != 0) {
-			JPEG_WRN("Error! Enable error handling for jpeg encoder");
-			jpeg_drv_enc_deinit();
-		}
-	}
-#ifdef JPEG_DEC_DRIVER
-	else if (*pStatus == JPEG_DEC_PROCESS) {
-		if (dec_status != 0) {
-			JPEG_WRN("Error! Enable error handling for jpeg decoder");
-			jpeg_drv_dec_deinit();
-		}
-	}
-#endif
+	jpeg_release_owned(pStatus);
 
 	return 0;
 }
