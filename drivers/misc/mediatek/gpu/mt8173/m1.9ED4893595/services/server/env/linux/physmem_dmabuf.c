@@ -933,7 +933,7 @@ PhysmemImportSparseDmaBuf(CONNECTION_DATA *psConnection,
 		/* Parameter validation - Mapping table entries*/
 		for (i = 0; i < ui32NumPhysChunks; i++)
 		{
-			if (pui32MappingTable[i] > ui32NumVirtChunks)
+			if (pui32MappingTable[i] >= ui32NumVirtChunks)
 			{
 				PVR_DPF((PVR_DBG_ERROR,
 						"%s: Requesting sparse buffer: "
