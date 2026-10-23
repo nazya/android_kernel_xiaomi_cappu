@@ -197,6 +197,16 @@ static int ion_mm_heap_allocate(struct ion_heap *heap,
 		return -ENOMEM;
 	}
 
+	/*
+	 * create MM buffer info for it, before the pages leave the list below:
+	 * the error path frees pages from the list only
+	 */
+	pBufferInfo = kzalloc(sizeof(ion_mm_buffer_info), GFP_KERNEL);
+	if (IS_ERR_OR_NULL(pBufferInfo)) {
+		IONMSG("[ion_mm_heap_allocate]: Error. Allocate ion_buffer failed.\n");
+		return -ENOMEM;
+	}
+
 	INIT_LIST_HEAD(&pages);
 	start = sched_clock();
 	while (size_remaining > 0) {
@@ -241,13 +251,6 @@ static int ion_mm_heap_allocate(struct ion_heap *heap,
 		kfree(info);
 	}
 
-	/* create MM buffer info for it */
-	pBufferInfo = kzalloc(sizeof(ion_mm_buffer_info), GFP_KERNEL);
-	if (IS_ERR_OR_NULL(pBufferInfo)) {
-		IONMSG("[ion_mm_heap_allocate]: Error. Allocate ion_buffer failed.\n");
-		goto err1;
-	}
-
 	buffer->sg_table = table;
 	mutex_init(&pBufferInfo->lock);
 	pBufferInfo->pVA = 0;
@@ -272,6 +275,7 @@ err:
 		free_buffer_page(sys_heap, buffer, info->page, info->order);
 		kfree(info);
 	}
+	kfree(pBufferInfo);
 	IONMSG("error: mm_alloc fail: size=%lu, flag=%lu.\n", size, flags);
 	return -ENOMEM;
 }
