@@ -33,6 +33,29 @@
 		reg = <0 0x40000000 0 0x80000000>;
 	};
 
+	firmware {
+		android {
+			compatible = "android,firmware";
+			fstab {
+				compatible = "android,fstab";
+				system {
+					compatible = "android,system";
+					dev = "/dev/block/platform/soc/11230000.mmc/by-name/system";
+					type = "ext4";
+					mnt_flags = "ro,noatime";
+					fsmgr_flags = "wait";
+				};
+				vendor {
+					compatible = "android,vendor";
+					dev = "/dev/block/platform/soc/11230000.mmc/by-name/cust";
+					type = "ext4";
+					mnt_flags = "ro,noatime";
+					fsmgr_flags = "wait";
+				};
+			};
+		};
+	};
+
 	mediatek,battery_meter {
 		compatible = "mediatek,battery_meter";
 		battery = "p1v1_battery";
