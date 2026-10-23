@@ -256,7 +256,7 @@ typedef struct cmdqDTSDataStruct {
 	uint32_t MDPBaseAddress[CMDQ_MAX_MDP_PA_BASE_COUNT];
 } cmdqDTSDataStruct;
 
-/* Custom "wide" pointer type for 64-bit job handle (pointer to VA) */
+/* Stable 64-bit userspace slot; the kernel publishes an opaque job ID. */
 typedef unsigned long long cmdqJobHandle_t;
 /* Custom "wide" pointer type for 64-bit compatibility. Always cast from uint32_t*. */
 typedef unsigned long long cmdqU32Ptr_t;

@@ -171,9 +171,7 @@ static int cmdq_open(struct inode *pInode, struct file *pFile)
 	pNode = (cmdqFileNodeStruct *) pFile->private_data;
 	pNode->userPID = current->pid;
 	pNode->userTGID = current->tgid;
-
-	INIT_LIST_HEAD(&(pNode->taskList));
-	spin_lock_init(&pNode->nodeLock);
+	cmdq_core_init_file_node(pNode);
 
 	CMDQ_VERBOSE("CMDQ driver open end\n");
 
@@ -184,7 +182,6 @@ static int cmdq_open(struct inode *pInode, struct file *pFile)
 static int cmdq_release(struct inode *pInode, struct file *pFile)
 {
 	cmdqFileNodeStruct *pNode;
-	unsigned long flags;
 
 	CMDQ_VERBOSE("CMDQ driver release fd=%p begin\n", pFile);
 
@@ -195,21 +192,9 @@ static int cmdq_release(struct inode *pInode, struct file *pFile)
 		return -EFAULT;
 	}
 
-	spin_lock_irqsave(&pNode->nodeLock, flags);
-
-	/* note that we did not release CMDQ tasks */
-	/* issued by this file node, */
-	/* since their HW operation may be pending. */
-
-	spin_unlock_irqrestore(&pNode->nodeLock, flags);
-
 	/* scan through tasks that created by this file node and release them */
-	cmdq_core_release_task_by_file_node((void *)pNode);
-
-	if (NULL != pFile->private_data) {
-		kfree(pFile->private_data);
-		pFile->private_data = NULL;
-	}
+	pFile->private_data = NULL;
+	cmdq_core_release_task_by_file_node(pNode);
 
 	CMDQ_VERBOSE("CMDQ driver release end\n");
 
@@ -243,7 +228,9 @@ static int cmdq_driver_create_reg_address_buffer(cmdqCommandStruct *pCommand)
 	}
 
 	/* how many register to dump? */
-	if (kernelRegCount > CMDQ_MAX_DUMP_REG_COUNT || userRegCount > CMDQ_MAX_DUMP_REG_COUNT)
+	if (kernelRegCount > CMDQ_MAX_DUMP_REG_COUNT ||
+	    userRegCount > CMDQ_MAX_DUMP_REG_COUNT ||
+	    kernelRegCount > CMDQ_MAX_DUMP_REG_COUNT - userRegCount)
 		return -EINVAL;
 	totalRegCount = kernelRegCount + userRegCount;
 
@@ -283,13 +270,15 @@ static int cmdq_driver_create_reg_address_buffer(cmdqCommandStruct *pCommand)
 	return 0;
 }
 
-static void cmdq_driver_process_read_address_request(cmdqReadAddressStruct *req_user)
+static int cmdq_driver_process_read_address_request(cmdqReadAddressStruct *req_user,
+	cmdqFileNodeStruct *file_node, uint64_t submission_sequence)
 {
 	/* create kernel-space buffer for working */
 	uint32_t *addrs = NULL;
 	uint32_t *values = NULL;
 	dma_addr_t pa = 0;
 	int i = 0;
+	int status = 0;
 
 	CMDQ_MSG("[READ_PA] cmdq_driver_process_read_address_request()\n");
 
@@ -300,18 +289,21 @@ static void cmdq_driver_process_read_address_request(cmdqReadAddressStruct *req_
 		    NULL == CMDQ_U32_PTR(req_user->values) ||
 		    NULL == CMDQ_U32_PTR(req_user->dmaAddresses)) {
 			CMDQ_ERR("[READ_PA] invalid req_user\n");
+			status = -EINVAL;
 			break;
 		}
 
 		addrs = kcalloc(req_user->count, sizeof(uint32_t), GFP_KERNEL);
 		if (NULL == addrs) {
 			CMDQ_ERR("[READ_PA] fail to alloc addr buf\n");
+			status = -ENOMEM;
 			break;
 		}
 
 		values = kcalloc(req_user->count, sizeof(uint32_t), GFP_KERNEL);
 		if (NULL == values) {
 			CMDQ_ERR("[READ_PA] fail to alloc value buf\n");
+			status = -ENOMEM;
 			break;
 		}
 
@@ -320,6 +312,7 @@ static void cmdq_driver_process_read_address_request(cmdqReadAddressStruct *req_
 		    (addrs, CMDQ_U32_PTR(req_user->dmaAddresses),
 		     req_user->count * sizeof(uint32_t))) {
 			CMDQ_ERR("[READ_PA] fail to copy user dmaAddresses\n");
+			status = -EFAULT;
 			break;
 		}
 
@@ -327,13 +320,19 @@ static void cmdq_driver_process_read_address_request(cmdqReadAddressStruct *req_
 		for (i = 0; i < req_user->count; ++i) {
 			pa = (0xFFFFFFFF & addrs[i]);
 			CMDQ_MSG("[READ_PA] req read dma address 0x%pa\n", &pa);
-			values[i] = cmdqCoreReadWriteAddress(pa);
+			status = cmdqCoreReadWriteAddressForFile(pa, &values[i],
+				file_node, submission_sequence);
+			if (status)
+				break;
 		}
+		if (status)
+			break;
 
 		/* copy value to user */
 		if (copy_to_user
 		    (CMDQ_U32_PTR(req_user->values), values, req_user->count * sizeof(uint32_t))) {
 			CMDQ_ERR("[READ_PA] fail to copy to user value buf\n");
+			status = -EFAULT;
 			break;
 		}
 
@@ -345,7 +344,7 @@ static void cmdq_driver_process_read_address_request(cmdqReadAddressStruct *req_
 
 	kfree(values);
 	values = NULL;
-
+	return status;
 }
 
 static long cmdq_driver_destroy_secure_medadata(cmdqCommandStruct *pCommand)
@@ -365,7 +364,7 @@ static long cmdq_driver_create_secure_medadata(cmdqCommandStruct *pCommand)
 	void *pAddrMetadatas = NULL;
 	uint32_t length;
 
-	if (pCommand->secData.addrMetadataCount >=
+	if (pCommand->secData.addrMetadataCount >
 		CMDQ_IWC_MAX_ADDR_LIST_LENGTH) {
 		CMDQ_ERR("Metadata %u reach the max allowed number = %u\n",
 			pCommand->secData.addrMetadataCount,
@@ -429,8 +428,11 @@ static long cmdq_driver_create_secure_medadata(cmdqCommandStruct *pCommand)
 	return 0;
 }
 
-static long cmdq_driver_process_command_request(cmdqCommandStruct *pCommand)
+static long cmdq_driver_process_command_request(cmdqCommandStruct *pCommand,
+	cmdqFileNodeStruct *file_node)
 {
+	struct cmdqFileSubmission submission;
+	struct TaskStruct *task = NULL;
 	int32_t status = 0;
 	uint32_t *userRegValue = NULL;
 	uint32_t userRegCount = 0;
@@ -470,14 +472,29 @@ static long cmdq_driver_process_command_request(cmdqCommandStruct *pCommand)
 	pCommand->regValue.count = pCommand->regRequest.count;
 	if (NULL == CMDQ_U32_PTR(pCommand->regValue.regValues)) {
 		kfree(CMDQ_U32_PTR(pCommand->regRequest.regAddresses));
+		cmdq_driver_destroy_secure_medadata(pCommand);
 		return -ENOMEM;
 	}
 
 	/* scenario id fixup */
 	cmdq_core_fix_command_scenario_for_user_space(pCommand);
 
-	status = cmdqCoreSubmitTask(pCommand);
+	status = cmdq_core_begin_file_submission(file_node, &submission);
+	if (status) {
+		cmdq_driver_destroy_secure_medadata(pCommand);
+		kfree(CMDQ_U32_PTR(pCommand->regRequest.regAddresses));
+		kfree(CMDQ_U32_PTR(pCommand->regValue.regValues));
+		return status;
+	}
+	status = cmdqCoreSubmitTaskAsync(pCommand, NULL, 0, &task);
+	if (status >= 0) {
+		cmdq_core_bind_file_submission(&submission, task);
+		status = cmdqCoreWaitResultAndReleaseTask(task,
+			&pCommand->regValue,
+			msecs_to_jiffies(CMDQ_DEFAULT_TIMEOUT_MS));
+	}
 	if (0 > status) {
+		cmdq_core_end_file_submission(&submission, NULL);
 		CMDQ_ERR("Submit user commands for execution failed = %d\n", status);
 		cmdq_driver_destroy_secure_medadata(pCommand);
 
@@ -499,13 +516,15 @@ static long cmdq_driver_process_command_request(cmdqCommandStruct *pCommand)
 	}
 
 	/* copy back to user space buffer */
-	if (userRegValue && userRegCount) {
+	status = 0;
+	if (userRegCount) {
 		/* copy results back to user space */
 		CMDQ_VERBOSE("regValue[0] is %d\n", CMDQ_U32_PTR(pCommand->regValue.regValues)[0]);
 		if (copy_to_user
 		    (userRegValue, CMDQ_U32_PTR(pCommand->regValue.regValues),
 		     userRegCount * sizeof(uint32_t))) {
 			CMDQ_ERR("Copy REGVALUE to user space failed\n");
+			status = -EFAULT;
 		}
 	}
 
@@ -513,13 +532,19 @@ static long cmdq_driver_process_command_request(cmdqCommandStruct *pCommand)
 	kfree(CMDQ_U32_PTR(pCommand->regRequest.regAddresses));
 	kfree(CMDQ_U32_PTR(pCommand->regValue.regValues));
 
-	if (pCommand->readAddress.count > 0)
-		cmdq_driver_process_read_address_request(&pCommand->readAddress);
+	if (!status && pCommand->readAddress.count > 0) {
+		status = cmdq_driver_process_read_address_request(
+			&pCommand->readAddress, file_node,
+			submission.sequence);
+		if (status)
+			CMDQ_ERR("read-address request failed: %d\n", status);
+	}
+	cmdq_core_end_file_submission(&submission, NULL);
 
 	/* free allocated secure metadata */
 	cmdq_driver_destroy_secure_medadata(pCommand);
 
-	return 0;
+	return status;
 }
 
 bool cmdq_driver_support_wait_and_receive_event_in_same_tick(void)
@@ -544,6 +569,25 @@ bool cmdq_driver_support_wait_and_receive_event_in_same_tick(void)
 #endif
 }
 
+static int cmdq_driver_validate_user_command(cmdqCommandStruct *command,
+	bool legacy)
+{
+	if (legacy && (command->secData.is_secure ||
+		command->secData.addrMetadataCount))
+		return -EOPNOTSUPP;
+	if (command->regRequest.count > CMDQ_MAX_DUMP_REG_COUNT ||
+	    !command->pVABase || command->blockSize < 2 * CMDQ_INST_SIZE ||
+	    command->blockSize > CMDQ_MAX_COMMAND_SIZE ||
+	    command->blockSize % CMDQ_INST_SIZE)
+		return -EINVAL;
+
+#ifdef CMDQ_PROFILE_MARKER_SUPPORT
+	/* Profile slots and tag pointers are kernel-recorder metadata, not UAPI. */
+	memset(&command->profileMarker, 0, sizeof(command->profileMarker));
+#endif
+	return 0;
+}
+
 static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 			      unsigned long param, bool legacy)
 {
@@ -555,29 +599,30 @@ static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 	struct cmdqJobResultStruct jobResult;
 	uint32_t *userRegValue = NULL;
 	uint32_t userRegCount = 0;
+	uint64_t userHandle = 0;
+	uint32_t *kernelRegValue = NULL;
+	struct cmdqUserJobInfo jobInfo;
+	cmdqRegValueStruct kernelResult;
+	cmdqFileNodeStruct *fileNode = pFile->private_data;
 	/* backup value after task release */
 	uint32_t regCount = 0, regCountUserSpace = 0, regUserToken = 0;
+	int32_t callbackStatus;
 
 	switch (code) {
 	case CMDQ_IOCTL_EXEC_COMMAND:
 		if (copy_from_user(&command, (void *)param, sizeof(cmdqCommandStruct)))
 			return -EFAULT;
 
-		/* Legacy secure metadata has a different element layout. */
-		if (legacy && (command.secData.is_secure ||
-			       command.secData.addrMetadataCount))
-			return -EOPNOTSUPP;
-
-		if (command.regRequest.count > CMDQ_MAX_DUMP_REG_COUNT ||
-			!command.blockSize ||
-			command.blockSize > CMDQ_MAX_COMMAND_SIZE)
-			return -EINVAL;
+		status = cmdq_driver_validate_user_command(&command, legacy);
+		if (status)
+			return status;
 
 		/* insert private_data for resource reclaim */
 		command.privateData = (cmdqU32Ptr_t) (unsigned long)(pFile->private_data);
 
-		if (cmdq_driver_process_command_request(&command))
-			return -EFAULT;
+		status = cmdq_driver_process_command_request(&command, fileNode);
+		if (status)
+			return status;
 		break;
 	case CMDQ_IOCTL_QUERY_USAGE:
 		if (cmdqCoreQueryUsage(count))
@@ -589,18 +634,15 @@ static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 		}
 		break;
 	case CMDQ_IOCTL_ASYNC_JOB_EXEC:
+	{
+		struct cmdqFileSubmission submission;
+
 		if (copy_from_user(&job, (void *)param, sizeof(cmdqJobStruct)))
 			return -EFAULT;
 
-		/* Legacy secure metadata has a different element layout. */
-		if (legacy && (job.command.secData.is_secure ||
-			       job.command.secData.addrMetadataCount))
-			return -EOPNOTSUPP;
-
-		if (job.command.regRequest.count > CMDQ_MAX_DUMP_REG_COUNT ||
-			!job.command.blockSize ||
-			job.command.blockSize > CMDQ_MAX_COMMAND_SIZE)
-			return -EINVAL;
+		status = cmdq_driver_validate_user_command(&job.command, legacy);
+		if (status)
+			return status;
 
 		/* backup */
 		userRegCount = job.command.regRequest.count;
@@ -622,10 +664,20 @@ static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 
 		/* allocate secure medatata */
 		status = cmdq_driver_create_secure_medadata(&job.command);
-		if (0 != status)
+		if (0 != status) {
+			kfree(CMDQ_U32_PTR(job.command.regRequest.regAddresses));
 			return status;
+		}
 
+		status = cmdq_core_begin_file_submission(fileNode, &submission);
+		if (status) {
+			kfree(CMDQ_U32_PTR(job.command.regRequest.regAddresses));
+			cmdq_driver_destroy_secure_medadata(&job.command);
+			return status;
+		}
 		status = cmdqCoreSubmitTaskAsync(&job.command, NULL, 0, &pTask);
+		cmdq_core_end_file_submission(&submission,
+			status < 0 ? NULL : pTask);
 
 		/* store user space request count in TaskStruct */
 		/* for later retrieval */
@@ -641,116 +693,137 @@ static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 		/* free secure path metadata */
 		cmdq_driver_destroy_secure_medadata(&job.command);
 
-		if (status >= 0) {
-			job.hJob = (unsigned long)pTask;
-			if (copy_to_user((void *)param, (void *)&job, sizeof(cmdqJobStruct))) {
-				CMDQ_ERR("CMDQ_IOCTL_ASYNC_JOB_EXEC copy_to_user failed\n");
-				return -EFAULT;
-			}
-		} else {
-			job.hJob = (unsigned long)NULL;
-			return -EFAULT;
+		if (status < 0 || !pTask) {
+			if (pTask)
+				cmdqCoreAutoReleaseTask(pTask);
+			return status < 0 ? status : -EFAULT;
 		}
-		break;
+
+		status = cmdq_core_prepare_user_job(pTask, fileNode,
+			&userHandle);
+		if (status)
+			goto async_exec_release;
+		if (copy_to_user(&((cmdqJobStruct __user *)param)->hJob,
+			&userHandle, sizeof(userHandle))) {
+			CMDQ_ERR("CMDQ_IOCTL_ASYNC_JOB_EXEC handle copy failed\n");
+			status = -EFAULT;
+			goto async_exec_cancel;
+		}
+		status = cmdq_core_publish_user_job(pTask, fileNode, userHandle);
+		if (!status)
+			break;
+
+async_exec_cancel:
+		cmdq_core_cancel_user_job(pTask, fileNode, userHandle);
+async_exec_release:
+		cmdqCoreAutoReleaseTask(pTask);
+		return status;
+	}
 	case CMDQ_IOCTL_ASYNC_JOB_WAIT_AND_CLOSE:
+	{
+		struct cmdqFileSubmission resultSubmission;
+		bool resultSubmissionHeld = false;
+
 		if (copy_from_user(&jobResult, (void *)param, sizeof(jobResult))) {
 			CMDQ_ERR("copy_from_user jobResult fail\n");
 			return -EFAULT;
 		}
 
-		/* verify job handle */
-		pTask = cmdq_core_get_task_ptr((struct TaskStruct *)
-			(unsigned long)jobResult.hJob);
-		if (!pTask) {
-			CMDQ_ERR("invalid task ptr = 0x%llx\n", jobResult.hJob);
-			return -EINVAL;
-		}
-
-		if (pTask->regCount > CMDQ_MAX_DUMP_REG_COUNT)
-			return -EINVAL;
-
-		/* utility service, fill the engine flag. */
-		/* this is required by MDP. */
-		jobResult.engineFlag = pTask->engineFlag;
-
-		/* check if reg buffer suffices */
-		if (jobResult.regValue.count < pTask->regCountUserSpace) {
-			jobResult.regValue.count = pTask->regCountUserSpace;
-			if (copy_to_user((void *)param, (void *)&jobResult, sizeof(jobResult))) {
-				CMDQ_ERR("copy_to_user fail, line=%d\n", __LINE__);
-				return -EINVAL;
-			}
-			CMDQ_ERR("insufficient register buffer\n");
-			return -ENOMEM;
-		}
-
-		/* inform client the actual read register count */
-		jobResult.regValue.count = pTask->regCountUserSpace;
-		/* update user space before we replace the regValues pointer. */
-		if (copy_to_user((void *)param, (void *)&jobResult, sizeof(jobResult))) {
-			CMDQ_ERR("copy_to_user fail line=%d\n", __LINE__);
-			return -EINVAL;
-		}
-
-		/* allocate kernel space result buffer */
-		/* which contains kernel + user space requests */
-		userRegValue = CMDQ_U32_PTR(jobResult.regValue.regValues);
-		jobResult.regValue.regValues = (cmdqU32Ptr_t) (unsigned long)
-		    (kzalloc(pTask->regCount * sizeof(uint32_t), GFP_KERNEL));
-		jobResult.regValue.count = pTask->regCount;
-		if (NULL == CMDQ_U32_PTR(jobResult.regValue.regValues)) {
-			CMDQ_ERR("no reg value buffer\n");
-			return -ENOMEM;
-		}
-
-		/* backup value after task release */
-		regCount = pTask->regCount;
-		regCountUserSpace = pTask->regCountUserSpace;
-		regUserToken = pTask->regUserToken;
-
-		/* make sure the task is running and wait for it */
-		status = cmdqCoreWaitResultAndReleaseTask(pTask,
-							  &jobResult.regValue,
-							  msecs_to_jiffies
-							  (CMDQ_DEFAULT_TIMEOUT_MS));
-		if (status < 0) {
-			CMDQ_ERR("waitResultAndReleaseTask fail=%d\n", status);
-			/* free kernel space result buffer */
-			kfree(CMDQ_U32_PTR(jobResult.regValue.regValues));
+		userHandle = jobResult.hJob;
+		memset(&jobInfo, 0, sizeof(jobInfo));
+		status = cmdq_core_claim_user_job(fileNode, userHandle,
+			jobResult.regValue.count, &jobInfo, &pTask);
+		jobResult.engineFlag = jobInfo.engineFlag;
+		jobResult.regValue.count = jobInfo.regCountUserSpace;
+		if (status == -ENOMEM) {
+			if (copy_to_user((void *)param, &jobResult,
+				sizeof(jobResult)))
+				return -EFAULT;
 			return status;
 		}
+		if (status)
+			return status;
+		if (jobInfo.regCount > CMDQ_MAX_DUMP_REG_COUNT ||
+		    jobInfo.regCountUserSpace > jobInfo.regCount) {
+			status = -EOVERFLOW;
+			goto async_wait_unclaim;
+		}
 
-		/* pTask is released, do not access it any more */
-		pTask = NULL;
-
-		/* notify kernel space dump callback */
-		if (regCount > regCountUserSpace) {
-			CMDQ_VERBOSE("kernel space reg dump = %d, %d, %d\n", regCount,
-				     regCountUserSpace, regUserToken);
-			status = cmdqCoreDebugRegDumpEnd(regUserToken,
-							 regCount - regCountUserSpace,
-							 CMDQ_U32_PTR(jobResult.regValue.regValues +
-								      regCountUserSpace));
-			if (0 != status) {
-				/* Error status print */
-				CMDQ_ERR("cmdqCoreDebugRegDumpEnd returns %d\n", status);
+		/* Publish only UAPI data; retain the original userspace result pointer. */
+		if (copy_to_user((void *)param, &jobResult, sizeof(jobResult))) {
+			status = -EFAULT;
+			goto async_wait_unclaim;
+		}
+		userRegValue = CMDQ_U32_PTR(jobResult.regValue.regValues);
+		regCount = jobInfo.regCount;
+		regCountUserSpace = jobInfo.regCountUserSpace;
+		regUserToken = jobInfo.regUserToken;
+		if (regCount) {
+			kernelRegValue = kcalloc(regCount, sizeof(*kernelRegValue),
+				GFP_KERNEL);
+			if (!kernelRegValue) {
+				status = -ENOMEM;
+				goto async_wait_unclaim;
 			}
 		}
 
-		/* copy result to user space */
-		if (copy_to_user
-		    ((void *)userRegValue, (void *)(unsigned long)jobResult.regValue.regValues,
-		     regCountUserSpace * sizeof(uint32_t))) {
-			CMDQ_ERR("Copy REGVALUE to user space failed\n");
-			return -EFAULT;
+		status = cmdq_core_retain_task_submission(fileNode, pTask,
+			&resultSubmission);
+		if (status)
+			goto async_wait_unclaim;
+		resultSubmissionHeld = true;
+
+		status = cmdq_core_consume_user_job(pTask, fileNode, userHandle);
+		if (status)
+			goto async_wait_unclaim;
+		kernelResult.count = regCount;
+		kernelResult.regValues =
+			(cmdqU32Ptr_t)(unsigned long)kernelRegValue;
+		status = cmdqCoreWaitResultAndReleaseTask(pTask, &kernelResult,
+			msecs_to_jiffies(CMDQ_DEFAULT_TIMEOUT_MS));
+		pTask = NULL;
+		if (status) {
+			CMDQ_ERR("waitResultAndReleaseTask fail=%d\n", status);
+			goto async_wait_out;
 		}
 
+		if (regCount > regCountUserSpace) {
+			callbackStatus = cmdqCoreDebugRegDumpEnd(regUserToken,
+				regCount - regCountUserSpace,
+				kernelRegValue + regCountUserSpace);
+			if (callbackStatus)
+				CMDQ_ERR("cmdqCoreDebugRegDumpEnd returns %d\n",
+					callbackStatus);
+		}
+		if (regCountUserSpace && copy_to_user(userRegValue, kernelRegValue,
+			regCountUserSpace * sizeof(*kernelRegValue))) {
+			status = -EFAULT;
+			goto async_wait_out;
+		}
 		if (jobResult.readAddress.count > 0)
-			cmdq_driver_process_read_address_request(&jobResult.readAddress);
+			status = cmdq_driver_process_read_address_request(
+				&jobResult.readAddress, fileNode,
+				resultSubmission.sequence);
 
-		/* free kernel space result buffer */
-		kfree(CMDQ_U32_PTR(jobResult.regValue.regValues));
+async_wait_out:
+		if (resultSubmissionHeld) {
+			cmdq_core_end_file_submission(&resultSubmission, NULL);
+			resultSubmissionHeld = false;
+		}
+		kfree(kernelRegValue);
+		kernelRegValue = NULL;
+		if (status)
+			return status;
 		break;
+
+async_wait_unclaim:
+		if (resultSubmissionHeld)
+			cmdq_core_end_file_submission(&resultSubmission, NULL);
+		cmdq_core_unclaim_user_job(pTask, fileNode, userHandle);
+		kfree(kernelRegValue);
+		kernelRegValue = NULL;
+		return status;
+	}
 	case CMDQ_IOCTL_ALLOC_WRITE_ADDRESS:
 		do {
 			cmdqWriteAddressStruct addrReq;
@@ -763,7 +836,8 @@ static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 				return -EFAULT;
 			}
 
-			status = cmdqCoreAllocWriteAddress(addrReq.count, &paStart);
+			status = cmdqCoreAllocWriteAddressForFile(addrReq.count,
+				&paStart, fileNode);
 			if (0 != status) {
 				CMDQ_ERR
 				    ("CMDQ_IOCTL_ALLOC_WRITE_ADDRESS cmdqCoreAllocWriteAddress() failed\n");
@@ -776,9 +850,14 @@ static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 
 			if (copy_to_user((void *)param, &addrReq, sizeof(addrReq))) {
 				CMDQ_ERR("CMDQ_IOCTL_ALLOC_WRITE_ADDRESS copy_to_user failed\n");
+				cmdqCoreCancelWriteAddressForFile(paStart, fileNode);
 				return -EFAULT;
 			}
-			status = 0;
+			status = cmdqCorePublishWriteAddressForFile(paStart, fileNode);
+			if (status) {
+				cmdqCoreCancelWriteAddressForFile(paStart, fileNode);
+				return status;
+			}
 		} while (0);
 		break;
 	case CMDQ_IOCTL_FREE_WRITE_ADDRESS:
@@ -792,7 +871,8 @@ static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 				return -EFAULT;
 			}
 
-			status = cmdqCoreFreeWriteAddress(freeReq.startPA);
+			status = cmdqCoreFreeWriteAddressForFile(freeReq.startPA,
+				fileNode);
 			if (0 != status)
 				return status;
 
@@ -811,9 +891,10 @@ static long cmdq_ioctl_common(struct file *pFile, unsigned int code,
 			}
 
 			/* this will copy result to readReq->values buffer */
-			cmdq_driver_process_read_address_request(&readReq);
-
-			status = 0;
+			status = cmdq_driver_process_read_address_request(&readReq,
+				fileNode, 0);
+			if (status)
+				return status;
 
 		} while (0);
 		break;

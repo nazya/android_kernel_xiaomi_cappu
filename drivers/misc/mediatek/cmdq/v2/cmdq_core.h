@@ -24,6 +24,9 @@
 #include <linux/sched.h>
 #include "cmdq_def.h"
 
+struct cmdqFileNodeStruct;
+struct cmdqFileSubmission;
+
 /*  */
 /* address conversion for 4GB ram support: */
 /* .address register: 32 bit */
@@ -471,8 +474,24 @@ struct CmdFreeWorkStruct {
 	struct work_struct free_buffer_work;
 };
 
+typedef enum CMDQ_USER_JOB_STATE_ENUM {
+	CMDQ_USER_JOB_NONE = 0,
+	CMDQ_USER_JOB_PUBLISHING,
+	CMDQ_USER_JOB_PUBLISHED,
+	CMDQ_USER_JOB_CLAIMED,
+	CMDQ_USER_JOB_CONSUMED,
+} CMDQ_USER_JOB_STATE_ENUM;
+
+struct cmdqUserJobInfo {
+	uint64_t engineFlag;
+	uint32_t regCount;
+	uint32_t regCountUserSpace;
+	uint32_t regUserToken;
+};
+
 typedef struct TaskStruct {
 	struct list_head listEntry;
+	struct list_head ownerEntry;
 
 	/* For buffer state */
 	TASK_STATE_ENUM taskState;	/* task life cycle */
@@ -488,13 +507,18 @@ typedef struct TaskStruct {
 	uint32_t *pCMDEnd;
 	int32_t reorder;
 	int32_t thread;		/* ASYNC: CMDQ_INVALID_THREAD if not running */
+	int32_t dispatchError;	/* terminal error before assignment to a HW thread */
 	int32_t irqFlag;	/* ASYNC: flag of IRQ received */
 	CmdqInterruptCB loopCallback;	/* LOOP execution */
 	unsigned long loopData;	/* LOOP execution */
 	CmdqAsyncFlushCB flushCallback;	/* Callback on AsyncFlush (fire-and-forget) tasks */
 	unsigned long flushData;	/* for callbacks & error handling */
-	struct work_struct autoReleaseWork;	/* Work item when auto release is used */
 	atomic_t useWorkQueue;
+	struct cmdqFileNodeStruct *fileNode;
+	uint64_t userHandle;
+	uint64_t ownerSequence;
+	CMDQ_USER_JOB_STATE_ENUM userJobState;
+	bool resourceLocked;
 
 	/* Output section for "read from reg to mem" */
 	uint32_t regCount;
@@ -628,9 +652,14 @@ typedef struct ErrorStruct {
 typedef struct WriteAddrStruct {
 	struct list_head list_node;
 	uint32_t count;
+	size_t bytes;
 	void *va;
 	dma_addr_t pa;
 	pid_t user;
+	struct cmdqFileNodeStruct *fileNode;
+	uint64_t retireSequence;
+	bool published;
+	bool pendingFree;
 } WriteAddrStruct;
 
 /**
@@ -831,14 +860,20 @@ extern "C" {
 	int32_t cmdqCoreSubmitTask(cmdqCommandStruct *pCommandDesc);
 
 
-/**
- * Helper function get valid task pointer
- *
- * Return:
- *     task pointer if available
- */
-	struct TaskStruct *cmdq_core_get_task_ptr(
-		struct TaskStruct *task_handle);
+/* File-bound opaque userspace job publication and one-waiter ownership. */
+	int cmdq_core_prepare_user_job(TaskStruct *pTask,
+		struct cmdqFileNodeStruct *file_node, uint64_t *handle);
+	int cmdq_core_publish_user_job(TaskStruct *pTask,
+		struct cmdqFileNodeStruct *file_node, uint64_t handle);
+	int cmdq_core_cancel_user_job(TaskStruct *pTask,
+		struct cmdqFileNodeStruct *file_node, uint64_t handle);
+	int cmdq_core_claim_user_job(struct cmdqFileNodeStruct *file_node,
+		uint64_t handle, uint32_t reg_capacity,
+		struct cmdqUserJobInfo *info, TaskStruct **pTaskOut);
+	int cmdq_core_unclaim_user_job(TaskStruct *pTask,
+		struct cmdqFileNodeStruct *file_node, uint64_t handle);
+	int cmdq_core_consume_user_job(TaskStruct *pTask,
+		struct cmdqFileNodeStruct *file_node, uint64_t handle);
 
 /**
  * Immediately clear CMDQ event to 0 with CPU
@@ -955,6 +990,17 @@ extern "C" {
 	int cmdqCoreFreeWriteAddress(dma_addr_t paStart);
 	uint32_t cmdqCoreReadWriteAddress(dma_addr_t pa);
 	uint32_t cmdqCoreWriteWriteAddress(dma_addr_t pa, uint32_t value);
+	int cmdqCoreAllocWriteAddressForFile(uint32_t count, dma_addr_t *paStart,
+		struct cmdqFileNodeStruct *file_node);
+	int cmdqCorePublishWriteAddressForFile(dma_addr_t paStart,
+		struct cmdqFileNodeStruct *file_node);
+	int cmdqCoreCancelWriteAddressForFile(dma_addr_t paStart,
+		struct cmdqFileNodeStruct *file_node);
+	int cmdqCoreFreeWriteAddressForFile(dma_addr_t paStart,
+		struct cmdqFileNodeStruct *file_node);
+	int cmdqCoreReadWriteAddressForFile(dma_addr_t pa, uint32_t *value,
+		struct cmdqFileNodeStruct *file_node,
+		uint64_t submission_sequence);
 
 	int32_t cmdq_core_profile_enabled(void);
 
@@ -965,9 +1011,17 @@ extern "C" {
 
 	void cmdq_core_add_consume_task(void);
 
-/* file_node is a pointer to cmdqFileNodeStruct that is */
-/* created when opening the device file. */
-	void cmdq_core_release_task_by_file_node(void *file_node);
+	void cmdq_core_init_file_node(struct cmdqFileNodeStruct *file_node);
+	int cmdq_core_begin_file_submission(struct cmdqFileNodeStruct *file_node,
+		struct cmdqFileSubmission *submission);
+	void cmdq_core_bind_file_submission(
+		struct cmdqFileSubmission *submission, TaskStruct *task);
+	int cmdq_core_retain_task_submission(
+		struct cmdqFileNodeStruct *file_node, TaskStruct *task,
+		struct cmdqFileSubmission *submission);
+	void cmdq_core_end_file_submission(struct cmdqFileSubmission *submission,
+		TaskStruct *task);
+	void cmdq_core_release_task_by_file_node(struct cmdqFileNodeStruct *file_node);
 
 	void cmdq_core_longstring_init(char *buf, uint32_t *offset, int32_t *maxSize);
 	void cmdqCoreLongString(bool forceLog, char *buf, uint32_t *offset, int32_t *maxSize,
