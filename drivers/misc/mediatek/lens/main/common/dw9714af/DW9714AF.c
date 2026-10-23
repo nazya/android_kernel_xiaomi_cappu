@@ -284,7 +284,23 @@ int DW9714AF_Release(struct inode *a_pstInode, struct file *a_pstFile)
 	LOG_INF("Start\n");
 
 	if (*g_pAF_Opened == 2) {
+		unsigned long position;
+
 		LOG_INF("Wait\n");
+		/*
+		 * The ramp below starts with one write to 400 from wherever AF
+		 * left the lens; from a close-up (600-870) that single step is
+		 * an audible knock. Walk down to 400 first at the ramp's own
+		 * rate, 50 codes per 20 ms.
+		 */
+		spin_lock(g_pAF_SpinLock);
+		position = g_u4CurrPosition;
+		spin_unlock(g_pAF_SpinLock);
+		while (position > 450) {
+			position -= 50;
+			s4AF_SetPosition((u16)position);
+			msleep(20);
+		}
 		s4AF_SetPosition(400);
 		msleep(20);
 		s4AF_SetPosition(350);
