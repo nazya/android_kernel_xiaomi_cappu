@@ -1504,6 +1504,8 @@ int _ioctl_set_input_buffer(unsigned long arg)
 	disp_session_input_config *s_session_input;
 
 	s_session_input = kmalloc(sizeof(disp_session_input_config), GFP_KERNEL);
+	if (!s_session_input)
+		return -ENOMEM;
 
 	if (copy_from_user(s_session_input, argp, sizeof(disp_session_input_config))) {
 		DISPMSG("[FB]: copy_from_user failed! line:%d\n", __LINE__);
