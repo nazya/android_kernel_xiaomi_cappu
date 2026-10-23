@@ -409,7 +409,6 @@ extern void get_derived_permission(struct dentry *parent, struct dentry *dentry)
 extern void get_derived_permission_new(struct dentry *parent, struct dentry *dentry, struct dentry *newdentry);
 extern void get_derive_permissions_recursive(struct dentry *parent);
 
-extern void update_derived_permission(struct dentry *dentry);
 extern void update_derived_permission_lock(struct dentry *dentry);
 extern int need_graft_path(struct dentry *dentry);
 extern int is_base_obbpath(struct dentry *dentry);
@@ -528,20 +527,4 @@ static inline void sdcardfs_copy_and_fix_attrs(struct inode *dest, const struct 
 	dest->i_flags = src->i_flags;
 	set_nlink(dest, src->i_nlink);
 }
-
-extern int sdcardfs_init_workqueue(void);
-extern void sdcardfs_destroy_workqueue(void);
-extern int sdcardfs_work_dispatch_create(struct inode *dir, struct dentry *dentry,
-	umode_t mode, bool want_excl);
-extern int sdcardfs_work_dispatch_unlink(struct inode *dir, struct dentry *dentry);
-extern int sdcardfs_work_dispatch_permissions(struct dentry *entry);
-extern int sdcardfs_work_dispatch_mkdir(struct inode *dir, struct dentry *dentry,
-	umode_t mode);
-
-#define SDCARDFS_WQOP_DONE           0
-#define SDCARDFS_WQOP_RECURSIVE_PERM 1
-#define SDCARDFS_WQOP_CREATE         2
-#define SDCARDFS_WQOP_UNLINK         3
-#define SDCARDFS_WQOP_MKDIR          4
-
 #endif	/* not _SDCARDFS_H_ */

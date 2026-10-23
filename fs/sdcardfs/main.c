@@ -223,13 +223,6 @@ static int sdcardfs_read_super(struct super_block *sb, const char *dev_name,
 	atomic_inc(&lower_sb->s_active);
 	sdcardfs_set_lower_super(sb, lower_sb);
 
-	sb->s_stack_depth = lower_sb->s_stack_depth + 1;
-	if (sb->s_stack_depth > FILESYSTEM_MAX_STACK_DEPTH) {
-		pr_err("sdcardfs: maximum fs stacking depth exceeded\n");
-		err = -EINVAL;
-		goto out_sput;
-	}
-
 	/* inherit maxbytes from lower file system */
 	sb->s_maxbytes = lower_sb->s_maxbytes;
 
@@ -281,7 +274,7 @@ static int sdcardfs_read_super(struct super_block *sb, const char *dev_name,
 					sb_info->options.fs_low_uid,
 					sb_info->options.fs_low_gid, 00755);*/
 	} else {
-		setup_derived_state(sb->s_root->d_inode, PERM_ROOT, 0, AID_ROOT, false);
+		setup_derived_state(sb->s_root->d_inode, PERM_ROOT, sb_info->options.fs_low_uid, AID_ROOT, false);
 		snprintf(sb_info->obbpath_s, PATH_MAX, "%s/Android/obb", dev_name);
 	}
 	fix_derived_permission(sb->s_root->d_inode);
@@ -381,15 +374,11 @@ static int __init init_sdcardfs_fs(void)
 	if (err)
 		goto out;
 	err = register_filesystem(&sdcardfs_fs_type);
-	if (err)
-		goto out;
-	err = sdcardfs_init_workqueue();
 out:
 	if (err) {
 		sdcardfs_destroy_inode_cache();
 		sdcardfs_destroy_dentry_cache();
 		packagelist_exit();
-		sdcardfs_destroy_workqueue();
 	}
 	return err;
 }
@@ -399,7 +388,6 @@ static void __exit exit_sdcardfs_fs(void)
 	sdcardfs_destroy_inode_cache();
 	sdcardfs_destroy_dentry_cache();
 	packagelist_exit();
-	sdcardfs_destroy_workqueue();
 	unregister_filesystem(&sdcardfs_fs_type);
 	pr_info("Completed sdcardfs module unload\n");
 }
