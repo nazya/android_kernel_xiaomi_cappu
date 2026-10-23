@@ -147,6 +147,7 @@ static PHYS_HEAP_REGION gsHeapRegionsLocal[] = {
 PVRSRV_ERROR SysDevInit(void *pvOSDevice, PVRSRV_DEVICE_CONFIG **ppsDevConfig)
 {
 	PVRSRV_ERROR err = PVRSRV_OK;
+	int ierr;
 
 	gsPhysHeapFuncs.pfnCpuPAddrToDevPAddr = UMAPhysHeapCpuPAddrToDevPAddr;
 	gsPhysHeapFuncs.pfnDevPAddrToCpuPAddr = UMAPhysHeapDevPAddrToCpuPAddr;
@@ -256,9 +257,20 @@ PVRSRV_ERROR SysDevInit(void *pvOSDevice, PVRSRV_DEVICE_CONFIG **ppsDevConfig)
 #endif
 
 	gsDevices[0].pvOSDevice = pvOSDevice;
-	*ppsDevConfig = &gsDevices[0];
 
-	MTKRGXDeviceInit(gsDevices);
+	ierr = MTKRGXDeviceInit(gsDevices);
+	if (ierr != 0)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "MTKRGXDeviceInit failed (%d)", ierr));
+#if defined(SUPPORT_ION)
+		IonDeinit();
+#endif
+		gsDevices[0].pvOSDevice = NULL;
+		return (ierr == -EPROBE_DEFER) ? PVRSRV_ERROR_PROBE_DEFER :
+						 PVRSRV_ERROR_INIT_FAILURE;
+	}
+
+	*ppsDevConfig = &gsDevices[0];
 	return err;
 }
 
