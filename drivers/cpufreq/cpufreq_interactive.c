@@ -134,6 +134,12 @@ struct cpufreq_interactive_tunables {
 /* For cases where we have single governor instance for system */
 static struct cpufreq_interactive_tunables *common_tunables;
 
+/*
+ * Tunables of a policy whose governor exited, indexed by the first CPU of
+ * the policy.  They survive the policy's CPUs going offline.
+ */
+static DEFINE_PER_CPU(struct cpufreq_interactive_tunables *, cached_tunables);
+
 static struct attribute_group *get_sysfs_attr(void);
 
 static void cpufreq_interactive_timer_resched(
@@ -1178,34 +1184,43 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 	case CPUFREQ_GOV_POLICY_INIT:
 		if (have_governor_per_policy()) {
 			WARN_ON(tunables);
+			j = cpumask_first(policy->related_cpus);
+			tunables = per_cpu(cached_tunables, j);
+			per_cpu(cached_tunables, j) = NULL;
 		} else if (tunables) {
 			tunables->usage_count++;
 			policy->governor_data = tunables;
 			return 0;
 		}
 
-		tunables = kzalloc(sizeof(*tunables), GFP_KERNEL);
 		if (!tunables) {
-			pr_err("%s: POLICY_INIT: kzalloc failed\n", __func__);
-			return -ENOMEM;
+			tunables = kzalloc(sizeof(*tunables), GFP_KERNEL);
+			if (!tunables) {
+				pr_err("%s: POLICY_INIT: kzalloc failed\n",
+				       __func__);
+				return -ENOMEM;
+			}
+
+			tunables->above_hispeed_delay =
+				default_above_hispeed_delay;
+			tunables->nabove_hispeed_delay =
+				ARRAY_SIZE(default_above_hispeed_delay);
+			tunables->go_hispeed_load = DEFAULT_GO_HISPEED_LOAD;
+			tunables->target_loads = default_target_loads;
+			tunables->ntarget_loads =
+				ARRAY_SIZE(default_target_loads);
+			tunables->min_sample_time = DEFAULT_MIN_SAMPLE_TIME;
+			tunables->timer_rate = DEFAULT_TIMER_RATE;
+			tunables->boostpulse_duration_val =
+				DEFAULT_MIN_SAMPLE_TIME;
+			tunables->timer_slack_val = DEFAULT_TIMER_SLACK;
+			tunables->io_is_busy = 1;
+
+			spin_lock_init(&tunables->target_loads_lock);
+			spin_lock_init(&tunables->above_hispeed_delay_lock);
 		}
 
 		tunables->usage_count = 1;
-		tunables->above_hispeed_delay = default_above_hispeed_delay;
-		tunables->nabove_hispeed_delay =
-			ARRAY_SIZE(default_above_hispeed_delay);
-		tunables->go_hispeed_load = DEFAULT_GO_HISPEED_LOAD;
-		tunables->target_loads = default_target_loads;
-		tunables->ntarget_loads = ARRAY_SIZE(default_target_loads);
-		tunables->min_sample_time = DEFAULT_MIN_SAMPLE_TIME;
-		tunables->timer_rate = DEFAULT_TIMER_RATE;
-		tunables->boostpulse_duration_val = DEFAULT_MIN_SAMPLE_TIME;
-		tunables->timer_slack_val = DEFAULT_TIMER_SLACK;
-		tunables->io_is_busy = 1;
-
-		spin_lock_init(&tunables->target_loads_lock);
-		spin_lock_init(&tunables->above_hispeed_delay_lock);
-
 		policy->governor_data = tunables;
 		if (!have_governor_per_policy()) {
 			common_tunables = tunables;
@@ -1243,10 +1258,13 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			sysfs_remove_group(get_governor_parent_kobj(policy),
 					get_sysfs_attr());
 
-			if (!have_governor_per_policy())
+			if (have_governor_per_policy()) {
+				j = cpumask_first(policy->related_cpus);
+				per_cpu(cached_tunables, j) = tunables;
+			} else {
 				cpufreq_put_global_kobject();
-
-			kfree(tunables);
+				kfree(tunables);
+			}
 			common_tunables = NULL;
 		}
 
