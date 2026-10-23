@@ -1077,14 +1077,16 @@ static inline void _m4u_port_clock_toggle(int m4u_index, int larb, int on)
 int m4u_config_port(M4U_PORT_STRUCT *pM4uPort)	/* native */
 {
 	M4U_PORT_ID PortID = (pM4uPort->ePortID);
-	int m4u_index = m4u_port_2_m4u_id(PortID);
-	int larb = m4u_port_2_larb_id(PortID);
+	int m4u_index;
+	int larb;
 	int ret;
 
 	if (PortID >= M4U_PORT_NR) {
 		M4UMSG("config port id error %d>%d\n", PortID, M4U_PORT_NR);
 		return -EFAULT;
 	}
+	m4u_index = m4u_port_2_m4u_id(PortID);
+	larb = m4u_port_2_larb_id(PortID);
 
 	M4ULOG_MID("config_port:%s,v%d,s%d\n", m4u_get_port_name(PortID),
 		   pM4uPort->Virtuality, pM4uPort->Security);

@@ -1695,6 +1695,8 @@ static long MTK_M4U_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 			M4UMSG("MTK_M4U_T_MONITOR_START,copy_from_user failed,%d\n", ret);
 			return -EFAULT;
 		}
+		if (PortID >= M4U_PORT_NR)
+			return -EINVAL;
 		ret = m4u_monitor_start(m4u_port_2_m4u_id(PortID));
 
 		break;
@@ -1705,6 +1707,8 @@ static long MTK_M4U_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 			M4UMSG("MTK_M4U_T_MONITOR_STOP,copy_from_user failed,%d\n", ret);
 			return -EFAULT;
 		}
+		if (PortID >= M4U_PORT_NR)
+			return -EINVAL;
 		ret = m4u_monitor_stop(m4u_port_2_m4u_id(PortID));
 		break;
 
