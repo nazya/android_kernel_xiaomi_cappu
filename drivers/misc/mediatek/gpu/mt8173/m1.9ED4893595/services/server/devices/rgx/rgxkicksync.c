@@ -733,6 +733,7 @@ fail_fdsync:
 #endif /* defined(SUPPORT_NATIVE_FENCE_SYNC) */
 #else /* !defined(PVRSRV_USE_SYNC_CHECKPOINTS) */
 	SyncAddrListRollbackCheckpoints(psKickSyncContext->psDeviceNode, &psKickSyncContext->sSyncAddrListUpdate);
+fail_alloc_update_values_mem:
 	if(iUpdateFence != PVRSRV_FENCE_INVALID)
 	{
 		SyncCheckpointRollbackFenceData(iUpdateFence, pvUpdateFenceFinaliseData);
@@ -743,17 +744,16 @@ fail_fdsync:
 	{
 		OSFreeMem(pui32IntAllocatedUpdateValues);
 	}
-fail_alloc_update_values_mem:
 fail_create_output_fence:
+	/* Drop the references taken on the sync checkpoints in the
+	 * resolved input fence before releasing the array that owns them. */
+	SyncAddrListDeRefCheckpoints(ui32FenceSyncCheckpointCount,
+								 apsFenceSyncCheckpoints);
 	/* Free memory allocated to hold the resolved fence's checkpoints */
 	if (apsFenceSyncCheckpoints)
 	{
 		SyncCheckpointFreeCheckpointListMem(apsFenceSyncCheckpoints);
 	}
-	/* Drop the references taken on the sync checkpoints in the
-	 * resolved input fence */
-	SyncAddrListDeRefCheckpoints(ui32FenceSyncCheckpointCount,
-								 apsFenceSyncCheckpoints);
 fail_resolve_fence:
 #endif /* !defined(PVRSRV_USE_SYNC_CHECKPOINTS) */
 fail_syncaddrlist:
