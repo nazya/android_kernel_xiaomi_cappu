@@ -926,9 +926,12 @@ static int mtk_smi_common_get(struct device *smidev, bool pm)
 	int ret;
 
 	if (pm) {
+		/* get_sync counts the reference even when it fails */
 		ret = pm_runtime_get_sync(smidev);
-		if (ret < 0)
+		if (ret < 0) {
+			pm_runtime_put_noidle(smidev);
 			return ret;
+		}
 	}
 
 	ret = clk_prepare_enable(smipriv->clk_apb);
@@ -972,8 +975,10 @@ static int _mtk_smi_larb_get(struct device *larbdev, bool pm)
 
 	if (pm) {
 		ret = pm_runtime_get_sync(larbdev);
-		if (ret < 0)
+		if (ret < 0) {
+			pm_runtime_put_noidle(larbdev);
 			goto err_put_smicommon;
+		}
 	}
 
 	ret = clk_prepare_enable(larbpriv->clk_apb);
