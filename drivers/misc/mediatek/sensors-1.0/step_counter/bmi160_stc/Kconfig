@@ -1,6 +1,7 @@
 
 config MTK_BMI160_STC
 	bool "BMI160 stc for MediaTek package"
+	depends on MTK_BMI160_I2C && CUSTOM_KERNEL_STEP_COUNTER
 	default n
 	help
 	It support different step counter sensor.

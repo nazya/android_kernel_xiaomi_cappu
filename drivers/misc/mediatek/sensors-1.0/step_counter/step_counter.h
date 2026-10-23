@@ -147,6 +147,8 @@ struct step_c_context {
 	bool		is_step_c_batch_enable;	/* version2.this is used for judging whether sensor is in batch mode */
 	bool		is_step_d_batch_enable;	/* version2.this is used for judging whether sensor is in batch mode */
 	bool		is_floor_c_batch_enable;	/* version2.used for judging whether sensor is in batch mode */
+	bool		is_smd_active;
+	u64		smd_activation_timestamp;
 };
 
 /* for auto detect */
@@ -158,6 +160,9 @@ typedef enum {
 } STEP_NOTIFY_TYPE;
 
 extern int  step_notify(STEP_NOTIFY_TYPE type);
+extern int step_notify_significant(u64 irq_timestamp, u32 irq_generation);
+extern u32 step_c_get_smd_generation(void);
+extern int step_c_smd_arm_ready(void);
 
 extern int step_c_driver_add(struct step_c_init_info *obj);
 extern int step_c_data_report(uint32_t new_counter, int status);

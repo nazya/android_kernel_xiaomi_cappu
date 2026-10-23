@@ -13,9 +13,21 @@
 
 
 #include "step_counter.h"
+#include <linux/timekeeping.h>
 
 static struct step_c_context *step_c_context_obj;
+static DEFINE_MUTEX(step_c_lifetime_mutex);
+static atomic_t smd_generation = ATOMIC_INIT(0);
 static struct step_c_init_info *step_counter_init_list[MAX_CHOOSE_STEP_C_NUM] = { 0 };
+
+static void step_c_init_event(struct sensor_event *event, int handle,
+			      enum flushAction action)
+{
+	memset(event, 0, sizeof(*event));
+	event->time_stamp = ktime_get_boot_ns();
+	event->handle = handle;
+	event->flush_action = action;
+}
 
 static void step_c_work_func(struct work_struct *work)
 {
@@ -131,18 +143,94 @@ static struct step_c_context *step_c_context_alloc_object(void)
 	mutex_init(&obj->step_c_op_mutex);
 	obj->is_step_c_batch_enable = false;	/* for batch mode init */
 	obj->is_step_d_batch_enable = false;	/* for batch mode init */
+	obj->is_smd_active = false;
+	obj->smd_activation_timestamp = 0;
 
 	STEP_C_LOG("step_c_context_alloc_object----\n");
 	return obj;
 }
 
+static int significant_real_enable(int enable);
+
+u32 step_c_get_smd_generation(void)
+{
+	/* IRQ-safe token: its lifetime is independent of the common context. */
+	return (u32)atomic_read(&smd_generation);
+}
+
+int step_c_smd_arm_ready(void)
+{
+	struct step_c_context *cxt = step_c_context_obj;
+
+	if (!cxt)
+		return -ENODEV;
+
+	/* Called by the backend after clearing stale status, before IRQ arm. */
+	atomic_inc(&smd_generation);
+	cxt->smd_activation_timestamp = ktime_get_boot_ns();
+	return 0;
+}
+
+int step_notify_significant(u64 irq_timestamp, u32 irq_generation)
+{
+	struct step_c_context *cxt;
+	struct sensor_event event;
+	int rearm_err;
+	int err;
+
+	mutex_lock(&step_c_lifetime_mutex);
+	cxt = step_c_context_obj;
+	if (!cxt) {
+		err = -ENODEV;
+		goto out_lifetime;
+	}
+
+	mutex_lock(&cxt->step_c_op_mutex);
+	if (!cxt->is_smd_active ||
+	    irq_generation != (u32)atomic_read(&smd_generation) ||
+	    !irq_timestamp ||
+	    irq_timestamp < cxt->smd_activation_timestamp) {
+		err = 0;
+		goto out;
+	}
+
+	/* Disarm and reset the interrupt engine before publishing one-shot data. */
+	err = significant_real_enable(0);
+	if (err)
+		goto out;
+
+	STEP_C_LOG("fwq TYPE_SIGNIFICANT notify\n");
+	step_c_init_event(&event, ID_SIGNIFICANT_MOTION, DATA_ACTION);
+	event.time_stamp = irq_timestamp;
+	event.word[0] = 1;
+	err = sensor_input_event(cxt->mdev.minor, &event);
+	if (err) {
+		/* No event was delivered, so restore the framework's armed state. */
+		rearm_err = significant_real_enable(1);
+		if (rearm_err)
+			STEP_C_PR_ERR("failed to rearm significant motion: %d\n",
+				       rearm_err);
+	}
+out:
+	mutex_unlock(&cxt->step_c_op_mutex);
+out_lifetime:
+	mutex_unlock(&step_c_lifetime_mutex);
+	return err;
+}
+
 int step_notify(STEP_NOTIFY_TYPE type)
 {
 	int err = 0;
-	struct step_c_context *cxt = NULL;
+	struct step_c_context *cxt;
 	struct sensor_event event;
 
+	if (type == TYPE_SIGNIFICANT)
+		return step_notify_significant(ktime_get_boot_ns(),
+					       step_c_get_smd_generation());
+
 	cxt = step_c_context_obj;
+	if (!cxt)
+		return -ENODEV;
 
 	if (type == TYPE_STEP_DETECTOR) {
 		STEP_C_LOG("fwq TYPE_STEP_DETECTOR notify\n");
@@ -154,15 +242,6 @@ int step_notify(STEP_NOTIFY_TYPE type)
 		err = sensor_input_event(step_c_context_obj->mdev.minor, &event);
 
 	}
-	if (type == TYPE_SIGNIFICANT) {
-		STEP_C_LOG("fwq TYPE_SIGNIFICANT notify\n");
-		/* cxt->step_c_data.get_data_significant(&value); */
-		event.flush_action = DATA_ACTION;
-		event.handle = ID_SIGNIFICANT_MOTION;
-		event.word[0] = 1;
-		err = sensor_input_event(step_c_context_obj->mdev.minor, &event);
-	}
-
 	return err;
 }
 
@@ -200,10 +279,13 @@ static int step_d_real_enable(int enable)
 static int significant_real_enable(int enable)
 {
 	int err = 0;
-	struct step_c_context *cxt = NULL;
+	struct step_c_context *cxt = step_c_context_obj;
 
-	cxt = step_c_context_obj;
 	if (1 == enable) {
+		if (cxt->is_smd_active)
+			return 0;
+		atomic_inc(&smd_generation);
+		cxt->smd_activation_timestamp = ktime_get_boot_ns();
 		err = cxt->step_c_ctl.enable_significant(1);
 		if (err) {
 			err = cxt->step_c_ctl.enable_significant(1);
@@ -215,12 +297,33 @@ static int significant_real_enable(int enable)
 					     enable, err);
 			}
 		}
+		if (!err) {
+			cxt->is_smd_active = true;
+		} else {
+			cxt->smd_activation_timestamp = 0;
+		}
 		STEP_C_LOG("enable_significant real enable\n");
 	}
 	if (0 == enable) {
+		if (!cxt->is_smd_active) {
+			/* Commit the logical disable and invalidate older IRQ work. */
+			atomic_inc(&smd_generation);
+			cxt->smd_activation_timestamp = 0;
+			return 0;
+		}
 		err = cxt->step_c_ctl.enable_significant(0);
 		if (err)
 			STEP_C_PR_ERR("enable_significantenable(%d) err = %d\n", enable, err);
+		else {
+			/*
+			 * Invalidate the activation only after backend disarm commits.
+			 * On failure the backend rolls the hardware back to armed, so
+			 * queued IRQ work must retain its generation and remain valid.
+			 */
+			atomic_inc(&smd_generation);
+			cxt->is_smd_active = false;
+			cxt->smd_activation_timestamp = 0;
+		}
 		STEP_C_LOG("enable_significant real disable\n");
 
 	}
@@ -437,17 +540,24 @@ static ssize_t step_c_store_active(struct device *dev, struct device_attribute *
 	int en = 0;
 
 	STEP_C_LOG("step_c_store_active buf=%s\n", buf);
-	mutex_lock(&step_c_context_obj->step_c_op_mutex);
-
+	mutex_lock(&step_c_lifetime_mutex);
 	cxt = step_c_context_obj;
+	if (!cxt) {
+		res = -ENODEV;
+		goto out_lifetime;
+	}
+	mutex_lock(&cxt->step_c_op_mutex);
 	if (NULL == cxt->step_c_ctl.open_report_data) {
 		STEP_C_LOG("step_c_ctl enable NULL\n");
-		mutex_unlock(&step_c_context_obj->step_c_op_mutex);
-		return count;
+		res = -ENODEV;
+		goto out;
 	}
 	res = sscanf(buf, "%d,%d", &handle, &en);
-	if (res != 2)
+	if (res != 2) {
 		STEP_C_LOG(" step_store_active param error: res = %d\n", res);
+		res = -EINVAL;
+		goto out;
+	}
 	STEP_C_LOG(" step_store_active handle=%d ,en=%d\n", handle, en);
 	switch (handle) {
 	case ID_STEP_COUNTER:
@@ -456,7 +566,7 @@ static ssize_t step_c_store_active(struct device *dev, struct device_attribute *
 		else if (0 == en)
 			res = step_c_enable_data(0);
 		else
-			STEP_C_PR_ERR(" step_c_store_active error !!\n");
+			res = -EINVAL;
 		break;
 	case ID_STEP_DETECTOR:
 		if (1 == en)
@@ -464,7 +574,7 @@ static ssize_t step_c_store_active(struct device *dev, struct device_attribute *
 		else if (0 == en)
 			res = step_d_real_enable(0);
 		else
-			STEP_C_PR_ERR(" step_d_real_enable error !!\n");
+			res = -EINVAL;
 		break;
 	case ID_SIGNIFICANT_MOTION:
 		if (1 == en)
@@ -472,7 +582,7 @@ static ssize_t step_c_store_active(struct device *dev, struct device_attribute *
 		else if (0 == en)
 			res = significant_real_enable(0);
 		else
-			STEP_C_PR_ERR(" significant_real_enable error !!\n");
+			res = -EINVAL;
 		break;
 	case ID_FLOOR_COUNTER:
 		if (en == 1)
@@ -480,13 +590,19 @@ static ssize_t step_c_store_active(struct device *dev, struct device_attribute *
 		else if (en == 0)
 			res = floor_c_enable_data(0);
 		else
-			STEP_C_PR_ERR(" fc_real_enable error !!\n");
+			res = -EINVAL;
 		break;
-
+	default:
+		res = -EINVAL;
+		break;
 	}
-	mutex_unlock(&step_c_context_obj->step_c_op_mutex);
+
+out:
+	mutex_unlock(&cxt->step_c_op_mutex);
+out_lifetime:
+	mutex_unlock(&step_c_lifetime_mutex);
 	STEP_C_LOG(" step_c_store_active done\n");
-	return res;
+	return res < 0 ? res : count;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -550,8 +666,10 @@ static ssize_t step_c_store_batch(struct device *dev, struct device_attribute *a
 	int64_t samplingPeriodNs = 0, maxBatchReportLatencyNs = 0;
 
 	res = sscanf(buf, "%d,%d,%lld,%lld", &handle, &flag, &samplingPeriodNs, &maxBatchReportLatencyNs);
-	if (res != 4)
+	if (res != 4) {
 		STEP_C_PR_ERR("step_c_store_batch param error: err = %d\n", res);
+		return -EINVAL;
+	}
 	STEP_C_LOG("handle %d, flag:%d samplingPeriodNs:%lld, maxBatchReportLatencyNs: %lld\n",
 			handle, flag, samplingPeriodNs, maxBatchReportLatencyNs);
 	mutex_lock(&step_c_context_obj->step_c_op_mutex);
@@ -575,14 +693,14 @@ static ssize_t step_c_store_batch(struct device *dev, struct device_attribute *a
 		if (res < 0)
 			STEP_C_PR_ERR("step detector enable batch err %d\n", res);
 	} else if (handle == ID_SIGNIFICANT_MOTION) {
-		if (cxt->step_c_ctl.is_smd_support_batch == true)
-			maxBatchReportLatencyNs = 0;
-		else
-			maxBatchReportLatencyNs = 0;
+		/* Significant motion is a non-batchable one-shot sensor. */
+		maxBatchReportLatencyNs = 0;
 		if (NULL != cxt->step_c_ctl.smd_batch)
 			res = cxt->step_c_ctl.smd_batch(flag, samplingPeriodNs, maxBatchReportLatencyNs);
-		else
+		else {
 			STEP_C_PR_ERR("STEP SMD DRIVER OLD ARCHITECTURE DON'T SUPPORT STEP SMD COMMON VERSION BATCH\n");
+			res = -EOPNOTSUPP;
+		}
 		if (res < 0)
 			STEP_C_PR_ERR("step smd enable batch err %d\n", res);
 	} else if (handle == ID_FLOOR_COUNTER) {
@@ -596,10 +714,12 @@ static ssize_t step_c_store_batch(struct device *dev, struct device_attribute *a
 			STEP_C_PR_ERR("DON'T SUPPORT FLOOR COUNT COMMON VERSION BATCH\n");
 		if (res < 0)
 			STEP_C_PR_ERR("floor count enable batch err %d\n", res);
+	} else {
+		res = -EINVAL;
 	}
 	mutex_unlock(&step_c_context_obj->step_c_op_mutex);
 	STEP_C_LOG(" step_c_store_batch done: %d\n", cxt->is_step_c_batch_enable);
-	return res;
+	return res < 0 ? res : count;
 }
 
 static ssize_t step_c_show_batch(struct device *dev, struct device_attribute *attr, char *buf)
@@ -977,17 +1097,22 @@ int floor_c_flush_report(void)
 
 static int step_c_probe(void)
 {
-
+	struct step_c_context *new_cxt;
+	struct step_c_context *failed_cxt;
 	int err;
 
 	STEP_C_LOG("+++++++++++++step_c_probe!!\n");
 
-	step_c_context_obj = step_c_context_alloc_object();
-	if (!step_c_context_obj) {
+	new_cxt = step_c_context_alloc_object();
+	if (!new_cxt) {
 		err = -ENOMEM;
 		STEP_C_PR_ERR("unable to allocate devobj!\n");
 		goto exit_alloc_data_failed;
 	}
+	mutex_lock(&step_c_lifetime_mutex);
+	atomic_set(&smd_generation, 0);
+	step_c_context_obj = new_cxt;
+	mutex_unlock(&step_c_lifetime_mutex);
 
 	/* init real step_c driver */
 	err = step_c_real_driver_init();
@@ -999,7 +1124,11 @@ static int step_c_probe(void)
 	STEP_C_LOG("----step_c_probe OK !!\n");
 	return 0;
 real_driver_init_fail:
-	kfree(step_c_context_obj);
+	mutex_lock(&step_c_lifetime_mutex);
+	failed_cxt = step_c_context_obj;
+	step_c_context_obj = NULL;
+	kfree(failed_cxt);
+	mutex_unlock(&step_c_lifetime_mutex);
 exit_alloc_data_failed:
 	STEP_C_LOG("----step_c_probe fail !!!\n");
 	return err;
@@ -1009,16 +1138,22 @@ exit_alloc_data_failed:
 
 static int step_c_remove(void)
 {
-
+	struct step_c_context *removed_cxt;
 	int err = 0;
 
 	STEP_C_FUN(f);
 	sysfs_remove_group(&step_c_context_obj->mdev.this_device->kobj, &step_c_attribute_group);
 
-	err = sensor_attr_deregister(&step_c_context_obj->mdev);
+	/* Drain SMD publication, then prevent any new publication before ring teardown. */
+	mutex_lock(&step_c_lifetime_mutex);
+	removed_cxt = step_c_context_obj;
+	step_c_context_obj = NULL;
+	mutex_unlock(&step_c_lifetime_mutex);
+
+	err = sensor_attr_deregister(&removed_cxt->mdev);
 	if (err)
 		STEP_C_PR_ERR("misc_deregister fail: %d\n", err);
-	kfree(step_c_context_obj);
+	kfree(removed_cxt);
 
 	return 0;
 }

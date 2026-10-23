@@ -44,6 +44,7 @@ struct step_c_i2c_data {
 	enum STC_POWERMODE_ENUM power_mode;
 	int datarate;
 	struct mutex lock;
+	struct mutex enable_lock;
 	atomic_t	trace;
 	atomic_t	suspend;
 	atomic_t	filter;
@@ -93,14 +94,15 @@ static int stc_i2c_read_block(struct i2c_client *client, u8 addr,
 	if (!client)
 		return -EINVAL;
 	else if (len > C_I2C_FIFO_SIZE) {
-		STEP_C_ERR(" length %d exceeds %d\n", len, C_I2C_FIFO_SIZE);
+		STEP_C_PR_ERR(" length %d exceeds %d\n", len, C_I2C_FIFO_SIZE);
 		return -EINVAL;
 	}
 	err = i2c_transfer(client->adapter, msgs, sizeof(msgs)/sizeof(msgs[0]));
 	if (err != 2) {
-		STEP_C_ERR("i2c_transfer error: (%d %p %d) %d\n",
+		STEP_C_PR_ERR("i2c_transfer error: (%d %p %d) %d\n",
 			addr, data, len, err);
-		err = -EIO;
+		if (err >= 0)
+			err = -EIO;
 	} else {
 		err = 0;
 	}
@@ -115,21 +117,21 @@ static int stc_i2c_write_block(struct i2c_client *client, u8 addr,
 	if (!client)
 		return -EINVAL;
 	else if (len >= C_I2C_FIFO_SIZE) {
-		STEP_C_ERR("length %d exceeds %d\n", len, C_I2C_FIFO_SIZE);
+		STEP_C_PR_ERR("length %d exceeds %d\n", len, C_I2C_FIFO_SIZE);
 		return -EINVAL;
 	}
+	if (addr == BMI160_CMD_COMMANDS__REG && len == 1)
+		return bmi160_acc_exec_command(data[0]);
 
 	buf[num++] = addr;
 	for (idx = 0; idx < len; idx++)
 		buf[num++] = data[idx];
 	err = i2c_master_send(client, buf, num);
-	if (err < 0) {
-		STEP_C_ERR("send command error!!\n");
-		return -EFAULT;
-	} else {
-		err = 0;
-	}
-	return err;
+	if (err == num)
+		return 0;
+
+	STEP_C_PR_ERR("send command error: %d\n", err);
+	return err < 0 ? err : -EIO;
 }
 
 BMI160_RETURN_FUNCTION_TYPE bmi160_set_step_counter_enable(u8 v_step_counter_u8)
@@ -137,6 +139,9 @@ BMI160_RETURN_FUNCTION_TYPE bmi160_set_step_counter_enable(u8 v_step_counter_u8)
 	struct step_c_i2c_data *obj = obj_i2c_data;
 	BMI160_RETURN_FUNCTION_TYPE com_rslt = E_BMI160_COMM_RES;
 	u8 v_data_u8 = BMI160_INIT_VALUE;
+
+	if (!obj || !obj->client)
+		return E_BMI160_NULL_PTR;
 
 	/* write the step counter */
 	com_rslt = stc_i2c_read_block(obj->client,
@@ -180,7 +185,7 @@ BMI160_RETURN_FUNCTION_TYPE bmi160_set_step_counter_enable(u8 v_step_counter_u8)
  *	@retval -1 -> Error
  *
  */
-static BMI160_RETURN_FUNCTION_TYPE bmi160_set_intr_enable_0(
+static BMI160_RETURN_FUNCTION_TYPE __maybe_unused bmi160_set_intr_enable_0(
 u8 v_enable_u8, u8 v_intr_enable_zero_u8)
 {
 	struct step_c_i2c_data *obj = obj_i2c_data;
@@ -803,66 +808,40 @@ u8 v_step_detector_u8)
 BMI160_RETURN_FUNCTION_TYPE bmi160_map_significant_motion_intr(
 u8 v_significant_u8)
 {
-	/* variable used for return the status of communication result*/
-	BMI160_RETURN_FUNCTION_TYPE com_rslt = E_BMI160_COMM_RES;
-	u8 v_sig_motion_u8 = BMI160_INIT_VALUE;
+	BMI160_RETURN_FUNCTION_TYPE com_rslt;
 	u8 v_data_u8 = BMI160_INIT_VALUE;
-	u8 v_any_motion_intr1_stat_u8 = BMI160_ENABLE_ANY_MOTION_INTR1;
-	u8 v_any_motion_intr2_stat_u8 = BMI160_ENABLE_ANY_MOTION_INTR2;
-	u8 v_any_motion_axis_stat_u8 = BMI160_ENABLE_ANY_MOTION_AXIS;
-	/* enable the significant motion interrupt */
-	com_rslt = bmi160_get_intr_significant_motion_select(&v_sig_motion_u8);
-	if (v_sig_motion_u8 != BMI160_SIG_MOTION_STAT_HIGH)
-		com_rslt += bmi160_set_intr_significant_motion_select(
-		BMI160_SIG_MOTION_INTR_ENABLE);
+
 	switch (v_significant_u8) {
 	case BMI160_MAP_INTR1:
-		/* interrupt */
 		com_rslt = stc_i2c_read_block(obj_i2c_data->client,
 		BMI160_USER_INTR_MAP_0_INTR1_ANY_MOTION__REG,
 		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
-		v_data_u8 |= v_any_motion_intr1_stat_u8;
+		if (com_rslt)
+			return com_rslt;
+		v_data_u8 |= BMI160_ENABLE_ANY_MOTION_INTR1;
 		/* map the signification interrupt to any-motion interrupt1*/
-		com_rslt += stc_i2c_write_block(obj_i2c_data->client,
+		com_rslt = stc_i2c_write_block(obj_i2c_data->client,
 		BMI160_USER_INTR_MAP_0_INTR1_ANY_MOTION__REG,
 		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
-		bmi160_stc_delay(BMI160_GEN_READ_WRITE_DELAY);
-		/* axis*/
-		com_rslt = stc_i2c_read_block(obj_i2c_data->client,
-		BMI160_USER_INTR_ENABLE_0_ADDR,
-		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
-		v_data_u8 |= v_any_motion_axis_stat_u8;
-		com_rslt += stc_i2c_write_block(obj_i2c_data->client,
-		BMI160_USER_INTR_ENABLE_0_ADDR,
-		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
-		bmi160_stc_delay(BMI160_GEN_READ_WRITE_DELAY);
-	break;
+		break;
 
 	case BMI160_MAP_INTR2:
+		com_rslt = stc_i2c_read_block(obj_i2c_data->client,
+		BMI160_USER_INTR_MAP_2_INTR2_ANY_MOTION__REG,
+		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
+		if (com_rslt)
+			return com_rslt;
+		v_data_u8 |= BMI160_ENABLE_ANY_MOTION_INTR2;
 		/* map the signification interrupt to any-motion interrupt2*/
-		com_rslt = stc_i2c_read_block(obj_i2c_data->client,
+		com_rslt = stc_i2c_write_block(obj_i2c_data->client,
 		BMI160_USER_INTR_MAP_2_INTR2_ANY_MOTION__REG,
 		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
-		v_data_u8 |= v_any_motion_intr2_stat_u8;
-		com_rslt += stc_i2c_write_block(obj_i2c_data->client,
-		BMI160_USER_INTR_MAP_2_INTR2_ANY_MOTION__REG,
-		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
-		bmi160_stc_delay(BMI160_GEN_READ_WRITE_DELAY);
-		/* axis*/
-		com_rslt = stc_i2c_read_block(obj_i2c_data->client,
-		BMI160_USER_INTR_ENABLE_0_ADDR,
-		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
-		v_data_u8 |= v_any_motion_axis_stat_u8;
-		com_rslt += stc_i2c_write_block(obj_i2c_data->client,
-		BMI160_USER_INTR_ENABLE_0_ADDR,
-		&v_data_u8, BMI160_GEN_READ_WRITE_DATA_LENGTH);
-		bmi160_stc_delay(BMI160_GEN_READ_WRITE_DELAY);
-	break;
+		break;
 	default:
-		com_rslt = E_BMI160_OUT_OF_RANGE;
-	break;
-
+		return E_BMI160_OUT_OF_RANGE;
 	}
+	if (!com_rslt)
+		bmi160_stc_delay(BMI160_GEN_READ_WRITE_DELAY);
 	return com_rslt;
 }
 
@@ -874,7 +853,7 @@ static int step_c_get_chip_type(struct i2c_client *client)
 	err = stc_i2c_read_block(client, BMI160_USER_CHIP_ID__REG, &chip_id, 1);
 	bmi160_stc_delay(20);
 	if (err < 0) {
-		STEP_C_ERR("read chip id failed.\n");
+		STEP_C_PR_ERR("read chip id failed.\n");
 		return err;
 	}
 	switch (chip_id) {
@@ -890,7 +869,7 @@ static int step_c_get_chip_type(struct i2c_client *client)
 		break;
 	}
 	if (obj->sensor_type == INVALID_TYPE) {
-		STEP_C_ERR("unknown sensor.\n");
+		STEP_C_PR_ERR("unknown sensor.\n");
 		return ERROR;
 	}
 	STEP_C_LOG("read sensor chip id = %x ok.\n", (int)chip_id);
@@ -910,11 +889,9 @@ static int step_c_set_powermode(enum STC_POWERMODE_ENUM power_mode)
 		actual_power_mode = CMD_PMU_ACC_SUSPEND;
 	else
 		actual_power_mode = CMD_PMU_ACC_NORMAL;
-	err = stc_i2c_write_block(obj_i2c_data->client,
-		BMI160_CMD_COMMANDS__REG, &actual_power_mode, 1);
-	bmi160_stc_delay(10);
+	err = bmi160_acc_exec_command(actual_power_mode);
 	if (err < 0) {
-		STEP_C_ERR("set power mode failed.\n");
+		STEP_C_PR_ERR("set power mode failed.\n");
 		mutex_unlock(&obj->lock);
 		return err;
 	}
@@ -942,7 +919,7 @@ static int step_c_set_datarate(int datarate)
 			BMI160_USER_ACC_CONF_ODR__REG, &data, 1);
 	}
 	if (err < 0)
-		STEP_C_ERR("set data rate failed.\n");
+		STEP_C_PR_ERR("set data rate failed.\n");
 	else
 		obj->datarate = datarate;
 	mutex_unlock(&obj->lock);
@@ -968,7 +945,7 @@ static int step_c_open(struct inode *inode, struct file *file)
 {
 	file->private_data = obj_i2c_data;
 	if (file->private_data == NULL) {
-		STEP_C_ERR("file->private_data == NULL.\n");
+		STEP_C_PR_ERR("file->private_data == NULL.\n");
 		return -EINVAL;
 	}
 	return nonseekable_open(inode, file);
@@ -1005,18 +982,29 @@ static int bmi160_step_c_open_report_data(int open)
 
 static int bmi160_step_c_enable_nodata(int en)
 {
+	struct step_c_i2c_data *obj = obj_i2c_data;
 	int err = 0;
-	STEP_C_FUN("bmi160_step_c_enable_nodata\n");
 
-	if (bmi160_set_step_counter_enable(en) < 0) {
-		STEP_C_ERR("set bmi160_STEP_COUNTER error");
+	STEP_C_FUN("bmi160_step_c_enable_nodata\n");
+	if (!obj || (en != 0 && en != 1))
 		return -EINVAL;
-	}
-	if (en == 1)
+
+	mutex_lock(&obj->enable_lock);
+	if (obj->stepcounter_enable == en)
+		goto out;
+	if (en) {
 		err = step_c_set_powermode(STC_NORMAL_MODE);
-	if (err)
-		STEP_C_ERR("set acc_op_mode failed");
-	obj_i2c_data->stepcounter_enable = en;
+		if (err)
+			goto out;
+	}
+	err = bmi160_set_step_counter_enable(en);
+	if (err) {
+		STEP_C_PR_ERR("set bmi160 step counter failed: %d\n", err);
+		goto out;
+	}
+	obj->stepcounter_enable = en;
+out:
+	mutex_unlock(&obj->enable_lock);
 	return err;
 }
 
@@ -1041,78 +1029,211 @@ static int bmi160_step_c_set_delay(u64 ns)
 			value, sample_delay);
 	err = step_c_set_datarate(sample_delay);
 	if (err < 0)
-		STEP_C_ERR("set data rate error.\n");
+		STEP_C_PR_ERR("set data rate error.\n");
 	return err;
+}
+
+static int bmi160_restore_significant_axes(u8 saved)
+{
+	struct step_c_i2c_data *obj = obj_i2c_data;
+	int err = stc_i2c_write_block(obj->client,
+				      BMI160_USER_INTR_ENABLE_0_ADDR,
+				      &saved, 1);
+
+	if (!err)
+		bmi160_stc_delay(BMI160_GEN_READ_WRITE_DELAY);
+	return err;
+}
+
+static int bmi160_set_significant_axes(int en, u8 *saved)
+{
+	struct step_c_i2c_data *obj = obj_i2c_data;
+	u8 previous;
+	u8 updated;
+	int rollback_err;
+	int err;
+
+	if (!obj || !obj->client || (en != 0 && en != 1))
+		return -EINVAL;
+
+	err = stc_i2c_read_block(obj->client, BMI160_USER_INTR_ENABLE_0_ADDR,
+				 &previous, 1);
+	if (err)
+		return err;
+	if (saved)
+		*saved = previous;
+
+	updated = en ? previous | BMI160_ENABLE_ANY_MOTION_AXIS :
+			 previous & ~BMI160_ENABLE_ANY_MOTION_AXIS;
+	err = stc_i2c_write_block(obj->client, BMI160_USER_INTR_ENABLE_0_ADDR,
+				  &updated, 1);
+	if (err) {
+		rollback_err = bmi160_restore_significant_axes(previous);
+		if (rollback_err)
+			STEP_C_PR_ERR("failed to roll back significant axes: %d\n",
+				       rollback_err);
+		return err;
+	}
+	bmi160_stc_delay(BMI160_GEN_READ_WRITE_DELAY);
+	return 0;
 }
 
 static int bmi160_step_c_enable_significant(int en)
 {
+	struct step_c_i2c_data *obj = obj_i2c_data;
+	u8 saved_axes = 0;
 	int err = 0;
-	u8 v_data = 0;
+	int rollback_err;
+	u8 v_data = 0x0b;
 
 	STEP_C_LOG("bmi160_step_c_enable_significant, en = %d\n", en);
-	/*this is a workaround for significant motion, when boot up,
-	writing value to 0x53 reg may not success without i2c err*/
+	if (!obj || (en != 0 && en != 1))
+		return -EINVAL;
+
+	mutex_lock(&obj->enable_lock);
 	if (en) {
-		v_data = 0xb;
-		err = stc_i2c_write_block(obj_i2c_data->client,
-				BMI160_USER_INTR_OUT_CTRL_ADDR, &v_data, 1);
+		err = bmi160_acc_set_smd_power(true);
+		if (err)
+			goto out;
+
+		/* The stock path needs an explicit interrupt output setup on boot. */
+		err = stc_i2c_write_block(obj->client,
+					  BMI160_USER_INTR_OUT_CTRL_ADDR, &v_data, 1);
+		if (err)
+			goto disable_power;
+		err = bmi160_set_significant_axes(0, NULL);
+		if (err)
+			goto disable_sensor;
+		err = bmi160_set_intr_significant_motion_select(1);
+		if (err)
+			goto disable_sensor;
+		err = bmi160_acc_reset_smd_interrupt();
+		if (err)
+			goto disable_sensor;
+		err = step_c_smd_arm_ready();
+		if (err)
+			goto disable_sensor;
+		err = bmi160_set_significant_axes(1, NULL);
+		if (err)
+			goto disable_sensor;
+		err = bmi160_acc_set_smd_irq_wake(true);
+		if (err)
+			goto disable_sensor;
+	} else {
+		err = bmi160_set_significant_axes(0, &saved_axes);
+		if (err)
+			goto out;
+		err = bmi160_set_intr_significant_motion_select(0);
+		if (err)
+			goto restore_sensor;
+		err = bmi160_acc_reset_smd_interrupt();
+		if (err)
+			goto restore_sensor;
+		err = bmi160_acc_set_smd_irq_wake(false);
+		if (err)
+			goto restore_sensor;
+		err = bmi160_acc_set_smd_power(false);
+		if (err)
+			goto restore_power_and_sensor;
 	}
 
-	if (bmi160_set_intr_significant_motion_select(en) < 0) {
-		STEP_C_ERR("set bmi160_significant error");
-		return -EINVAL;
-	}
-	if (en == 1) {
-		err = step_c_set_powermode(STC_NORMAL_MODE);
-		err = bmi160_set_intr_enable_0
-				(BMI160_ANY_MOTION_X_ENABLE, 1);
-		err += bmi160_set_intr_enable_0
-				(BMI160_ANY_MOTION_Y_ENABLE, 1);
-		err += bmi160_set_intr_enable_0
-				(BMI160_ANY_MOTION_Z_ENABLE, 1);
-	}
-	if (en == 0) {
-		err = bmi160_set_intr_enable_0
-				(BMI160_ANY_MOTION_X_ENABLE, 0);
-		err += bmi160_set_intr_enable_0
-				(BMI160_ANY_MOTION_Y_ENABLE, 0);
-		err += bmi160_set_intr_enable_0
-				(BMI160_ANY_MOTION_Z_ENABLE, 0);
-	}
+	obj->sigmotion_enable = en;
+	goto out;
+
+restore_power_and_sensor:
+	rollback_err = bmi160_acc_set_smd_power(true);
+	if (rollback_err)
+		STEP_C_PR_ERR("failed to restore significant power: %d\n",
+			       rollback_err);
+	rollback_err = bmi160_acc_set_smd_irq_wake(true);
+	if (rollback_err)
+		STEP_C_PR_ERR("failed to restore significant IRQ wake: %d\n",
+			       rollback_err);
+restore_sensor:
+	rollback_err = bmi160_set_intr_significant_motion_select(1);
+	if (rollback_err)
+		STEP_C_PR_ERR("failed to restore significant selector: %d\n",
+			       rollback_err);
+	rollback_err = bmi160_restore_significant_axes(saved_axes);
+	if (rollback_err)
+		STEP_C_PR_ERR("failed to restore significant axes: %d\n",
+			       rollback_err);
+	goto out;
+disable_sensor:
+	rollback_err = bmi160_set_significant_axes(0, NULL);
+	if (rollback_err)
+		STEP_C_PR_ERR("failed to disable significant axes: %d\n",
+			       rollback_err);
+	rollback_err = bmi160_set_intr_significant_motion_select(0);
+	if (rollback_err)
+		STEP_C_PR_ERR("failed to disable significant selector: %d\n",
+			       rollback_err);
+	rollback_err = bmi160_acc_reset_smd_interrupt();
+	if (rollback_err)
+		STEP_C_PR_ERR("failed to reset significant interrupt: %d\n",
+			       rollback_err);
+	rollback_err = bmi160_acc_set_smd_irq_wake(false);
+	if (rollback_err && rollback_err != -ENODEV)
+		STEP_C_PR_ERR("failed to disable significant IRQ wake: %d\n",
+			       rollback_err);
+disable_power:
+	rollback_err = bmi160_acc_set_smd_power(false);
+	if (rollback_err)
+		STEP_C_PR_ERR("failed to release significant power: %d\n",
+			       rollback_err);
+	obj->sigmotion_enable = 0;
+out:
 	if (err)
-		STEP_C_ERR("set acc_config failed");
-	obj_i2c_data->sigmotion_enable = en;
+		STEP_C_PR_ERR("set significant motion failed: %d\n", err);
+	mutex_unlock(&obj->enable_lock);
 	return err;
 }
 
 static int bmi160_step_c_enable_step_detect(int en)
 {
+	struct step_c_i2c_data *obj = obj_i2c_data;
 	int err = 0;
 
 	STEP_C_LOG("bmi160_step_c_enable_step_detect, en = %d\n", en);
-	if (bmi160_set_step_detector_enable(en) < 0) {
-		STEP_C_ERR("set bmi160_STEP_COUNTER error");
+	if (!obj || (en != 0 && en != 1))
 		return -EINVAL;
+
+	mutex_lock(&obj->enable_lock);
+	if (obj->stepdet_enable == en)
+		goto out;
+	if (en) {
+		err = step_c_set_powermode(STC_NORMAL_MODE);
+		if (err)
+			goto out;
 	}
+	err = bmi160_set_step_detector_enable(en);
+	if (err)
+		goto out;
 	#ifdef BMI160_ENABLE_INT1
-	if (bmi160_set_intr_low_g(BMI160_MAP_INTR1, en) < 0) {
-		STEP_C_ERR("set bmi160_STEP_COUNTER_lowg error");
-		return -EINVAL;
-	}
+	err = bmi160_set_intr_low_g(BMI160_MAP_INTR1, en);
+	if (err)
+		goto out;
 	#endif
 	#ifdef BMI160_ENABLE_INT2
-	if (bmi160_set_intr_low_g(BMI160_MAP_INTR2, en) < 0) {
-		STEP_C_ERR("set bmi160_STEP_COUNTER_lowg error");
-		return -EINVAL;
-	}
-	#endif
-	if (en == 1)
-		err = step_c_set_powermode(STC_NORMAL_MODE);
+	err = bmi160_set_intr_low_g(BMI160_MAP_INTR2, en);
 	if (err)
-		STEP_C_ERR("set acc_op_mode failed");
-	obj_i2c_data->stepdet_enable = en;
+		goto out;
+	#endif
+	obj->stepdet_enable = en;
+out:
+	if (err)
+		STEP_C_PR_ERR("set step detector failed: %d\n", err);
+	mutex_unlock(&obj->enable_lock);
 	return err;
+}
+
+static int bmi160_step_c_smd_batch(int flag, int64_t sampling_period_ns,
+				   int64_t max_report_latency_ns)
+{
+	(void)flag;
+	(void)sampling_period_ns;
+	(void)max_report_latency_ns;
+	return 0;
 }
 
 static int bmi160_stc_get_mode(struct i2c_client *client, u8 *mode)
@@ -1150,18 +1271,18 @@ static int bmi160_step_c_get_data(uint32_t *value, int *status)
 	if (0 == data) {
 		err = bmi160_stc_get_mode(obj->client, &acc_mode);
 		if (err < 0)
-			STEP_C_ERR("bmi160_acc_get_mode failed.\n");
+			STEP_C_PR_ERR("bmi160_acc_get_mode failed.\n");
 		STEP_C_LOG("step_c_get_data acc mode = %d.\n", acc_mode);
 		err = get_step_counter_enable(obj->client, &stc_enable);
 		if (err < 0)
-			STEP_C_ERR("get_step_counter_enable failed.\n");
+			STEP_C_PR_ERR("get_step_counter_enable failed.\n");
 		STEP_C_LOG("step_c_get_data stc enable = %d.\n", stc_enable);
 		if (acc_mode != 0 && stc_enable == 1)
 			data = last_stc_value;
 	}
 	bmi160_stc_delay(30);
 	if (err < 0) {
-		STEP_C_ERR("read step count fail.\n");
+		STEP_C_PR_ERR("read step count fail.\n");
 		return err;
 	}
 
@@ -1196,36 +1317,81 @@ static int bmi160_stc_get_data_step_d(uint32_t *value, int *status)
 
 static int bmi160_map_interrupt(void)
 {
-	int err = 0;
+	int err;
+
 	STEP_C_FUN("bmi160_map_interrupt\n");
 #ifdef BMI160_ENABLE_INT1
 	/*Set interrupt trige level way */
 	err = bmi160_set_intr_edge_ctrl(BMI160_MAP_INTR1, BMI_INT_LEVEL);
-	err += bmi160_set_intr_level(BMI160_MAP_INTR1, 1);
-	err += bmi160_set_output_enable(
-	BMI160_INTR1_OUTPUT_ENABLE, ENABLE);
-	err += bmi160_map_significant_motion_intr(BMI160_MAP_INTR1);
-	err += bmi160_map_step_detector_intr(BMI160_MAP_INTR1);
+	if (err)
+		return err;
+	err = bmi160_set_intr_level(BMI160_MAP_INTR1, 1);
+	if (err)
+		return err;
+	err = bmi160_set_output_enable(BMI160_INTR1_OUTPUT_ENABLE, ENABLE);
+	if (err)
+		return err;
+	err = bmi160_map_significant_motion_intr(BMI160_MAP_INTR1);
+	if (err)
+		return err;
+	err = bmi160_set_intr_significant_motion_select(0);
+	if (err)
+		return err;
+	err = bmi160_set_significant_axes(0, NULL);
+	if (err)
+		return err;
+	err = bmi160_acc_reset_smd_interrupt();
+	if (err)
+		return err;
+	err = bmi160_map_step_detector_intr(BMI160_MAP_INTR1);
+	if (err)
+		return err;
 	/*close step_detector in init function*/
-	err += bmi160_set_step_detector_enable(0);
+	err = bmi160_set_step_detector_enable(0);
+	if (err)
+		return err;
 	/*close log g in init function*/
-	err += bmi160_set_intr_low_g(BMI160_MAP_INTR1, 0);
+	err = bmi160_set_intr_low_g(BMI160_MAP_INTR1, 0);
+	if (err)
+		return err;
 #endif
 
 #ifdef BMI160_ENABLE_INT2
 	/*Set interrupt trige level way */
 	err = bmi160_set_intr_edge_ctrl(BMI160_MAP_INTR2, BMI_INT_LEVEL);
-	err += bmi160_set_intr_level(BMI160_MAP_INTR2, 1);
-	err += bmi160_set_output_enable(
-	BMI160_INTR2_OUTPUT_ENABLE, ENABLE);
-	err += bmi160_map_significant_motion_intr(BMI160_MAP_INTR2);
-	err += bmi160_map_step_detector_intr(BMI160_MAP_INTR2);
+	if (err)
+		return err;
+	err = bmi160_set_intr_level(BMI160_MAP_INTR2, 1);
+	if (err)
+		return err;
+	err = bmi160_set_output_enable(BMI160_INTR2_OUTPUT_ENABLE, ENABLE);
+	if (err)
+		return err;
+	err = bmi160_map_significant_motion_intr(BMI160_MAP_INTR2);
+	if (err)
+		return err;
+	err = bmi160_set_intr_significant_motion_select(0);
+	if (err)
+		return err;
+	err = bmi160_set_significant_axes(0, NULL);
+	if (err)
+		return err;
+	err = bmi160_acc_reset_smd_interrupt();
+	if (err)
+		return err;
+	err = bmi160_map_step_detector_intr(BMI160_MAP_INTR2);
+	if (err)
+		return err;
 	/*close step_detector in init function*/
-	err += bmi160_map_step_detector_intr(0);
+	err = bmi160_set_step_detector_enable(0);
+	if (err)
+		return err;
 	/*close log g in init function*/
-	err += bmi160_set_intr_low_g(BMI160_MAP_INTR2, 0);
+	err = bmi160_set_intr_low_g(BMI160_MAP_INTR2, 0);
+	if (err)
+		return err;
 #endif
-	return err;
+	return 0;
 }
 static int step_c_i2c_probe(void)
 {
@@ -1240,6 +1406,11 @@ static int step_c_i2c_probe(void)
 		err = -ENOMEM;
 		goto exit;
 	}
+	if (!bmi160_acc_i2c_client) {
+		STEP_C_PR_ERR("BMI160 accelerometer client is not ready\n");
+		err = -ENODEV;
+		goto exit_free_obj;
+	}
 	obj_i2c_data = obj;
 	obj->client = bmi160_acc_i2c_client;
 	atomic_set(&obj->trace, 0);
@@ -1247,25 +1418,34 @@ static int step_c_i2c_probe(void)
 	obj->power_mode = STC_UNDEFINED_POWERMODE;
 	obj->datarate = BMI160_ACCEL_ODR_RESERVED;
 	mutex_init(&obj->lock);
+	mutex_init(&obj->enable_lock);
 	err = step_c_init_client(obj->client);
 	if (err)
 		goto exit_init_client_failed;
+	err = bmi160_map_interrupt();
+	if (err) {
+		STEP_C_PR_ERR("bmi160_map_interrupt fail = %d\n", err);
+		goto exit_init_client_failed;
+	}
 	err = misc_register(&step_c_device);
 	if (err) {
-		STEP_C_ERR("misc device register failed, err = %d\n", err);
+		STEP_C_PR_ERR("misc device register failed, err = %d\n", err);
 		goto exit_misc_device_register_failed;
 	}
 	ctl.open_report_data = bmi160_step_c_open_report_data;
 	ctl.enable_nodata = bmi160_step_c_enable_nodata;
 	ctl.step_c_set_delay = bmi160_step_c_set_delay;
 	ctl.step_d_set_delay = bmi160_step_c_set_delay;
+	ctl.smd_batch = bmi160_step_c_smd_batch;
 	ctl.is_report_input_direct = false;
-	ctl.is_support_batch = false;
+	ctl.is_counter_support_batch = false;
+	ctl.is_detector_support_batch = false;
+	ctl.is_smd_support_batch = false;
 	ctl.enable_significant = bmi160_step_c_enable_significant;
 	ctl.enable_step_detect = bmi160_step_c_enable_step_detect;
 	err = step_c_register_control_path(&ctl);
 	if (err) {
-		STEP_C_ERR("register step_counter control path err.\n");
+		STEP_C_PR_ERR("register step_counter control path err.\n");
 		goto exit_create_attr_failed;
 	}
 	data.get_data = bmi160_step_c_get_data;
@@ -1274,12 +1454,9 @@ static int step_c_i2c_probe(void)
 	data.get_data_step_d = bmi160_stc_get_data_step_d;
 	err = step_c_register_data_path(&data);
 	if (err) {
-		STEP_C_ERR("step_c_register_data_path fail = %d\n", err);
+		STEP_C_PR_ERR("step_c_register_data_path fail = %d\n", err);
 		goto exit_create_attr_failed;
 	}
-	err = bmi160_map_interrupt();
-	if (err)
-		STEP_C_ERR("bmi160_map_interrupt fail = %d\n", err);
 	step_c_init_flag = 0;
 	STEP_C_LOG("%s: is ok.\n", __func__);
 	return 0;
@@ -1288,10 +1465,12 @@ exit_create_attr_failed:
 	misc_deregister(&step_c_device);
 exit_misc_device_register_failed:
 exit_init_client_failed:
+	obj_i2c_data = NULL;
+exit_free_obj:
 	kfree(obj);
 exit:
 	step_c_init_flag = -1;
-	STEP_C_ERR("err = %d\n", err);
+	STEP_C_PR_ERR("err = %d\n", err);
 	return err;
 }
 
@@ -1302,10 +1481,13 @@ static int bmi160_stc_remove(void)
 
 static int bmi160_stc_local_init(void)
 {
+	int err;
+
 	STEP_C_FUN("bmi160_stc_local_init.\n");
-	if (step_c_i2c_probe()) {
-		STEP_C_ERR("failed to register bmi160 step_c driver\n");
-		return -ENODEV;
+	err = step_c_i2c_probe();
+	if (err) {
+		STEP_C_PR_ERR("failed to register bmi160 step_c driver: %d\n", err);
+		return err;
 	}
 	return 0;
 }
@@ -1319,8 +1501,7 @@ static struct step_c_init_info bmi160_stc_init_info = {
 static int __init stc_init(void)
 {
 	STEP_C_FUN("stc_init\n");
-	step_c_driver_add(&bmi160_stc_init_info);
-	return 0;
+	return step_c_driver_add(&bmi160_stc_init_info);
 }
 
 static void __exit stc_exit(void)

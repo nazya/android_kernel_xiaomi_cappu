@@ -16,6 +16,10 @@
 #include <linux/ioctl.h>
 
 extern struct i2c_client *bmi160_acc_i2c_client;
+extern int bmi160_acc_exec_command(u8 command);
+extern int bmi160_acc_set_smd_irq_wake(bool enable);
+extern int bmi160_acc_set_smd_power(bool enable);
+extern int bmi160_acc_reset_smd_interrupt(void);
 
 #define STC_DRIVER_VERSION	"V1.0"
 #define SENSOR_NAME		"step_counter"

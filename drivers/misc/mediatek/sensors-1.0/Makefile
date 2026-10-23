@@ -6,6 +6,5 @@ obj-$(CONFIG_CUSTOM_KERNEL_GYROSCOPE) += gyroscope/
 obj-$(CONFIG_CUSTOM_KERNEL_MAGNETOMETER) += magnetometer/
 #obj-$(CONFIG_CUSTOM_KERNEL_HUMIDITY) += humidity/
 obj-$(CONFIG_CUSTOM_KERNEL_STEP_COUNTER)	+= step_counter/
-obj-$(CONFIG_CUSTOM_KERNEL_SIGNIFICANT_MOTION_SENSOR)	+= step_counter/
 #obj-$(CONFIG_CUSTOM_KERNEL_PEDOMETER)	+= pedometer/
 endif
