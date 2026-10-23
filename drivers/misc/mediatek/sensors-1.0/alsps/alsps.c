@@ -475,6 +475,32 @@ static ssize_t als_store_flush(struct device *dev, struct device_attribute *attr
 	return err ? (err < 0 ? err : -EIO) : count;
 }
 
+static ssize_t als_store_cali(struct device *dev, struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct alsps_context *cxt = NULL;
+	int err = 0;
+	uint8_t *cali_buf = NULL;
+
+	if (count > U8_MAX)
+		return -EINVAL;
+	cali_buf = kmemdup(buf, count, GFP_KERNEL);
+	if (cali_buf == NULL)
+		return -ENOMEM;
+
+	mutex_lock(&alsps_context_obj->alsps_op_mutex);
+	cxt = alsps_context_obj;
+	if (cxt->als_ctl.set_cali != NULL)
+		err = cxt->als_ctl.set_cali(cali_buf, count);
+	else
+		err = -EOPNOTSUPP;
+	if (err < 0)
+		ALSPS_PR_ERR("als set cali err %d\n", err);
+	mutex_unlock(&alsps_context_obj->alsps_op_mutex);
+	kfree(cali_buf);
+	return err ? (err < 0 ? err : -EIO) : count;
+}
+
 static ssize_t als_show_flush(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
@@ -812,6 +838,7 @@ DEVICE_ATTR(alsactive,		S_IWUSR | S_IRUGO, als_show_active, als_store_active);
 DEVICE_ATTR(alsbatch,		S_IWUSR | S_IRUGO, als_show_batch,  als_store_batch);
 DEVICE_ATTR(alsflush,		S_IWUSR | S_IRUGO, als_show_flush,  als_store_flush);
 DEVICE_ATTR(alsdevnum,		S_IWUSR | S_IRUGO, als_show_devnum,  NULL);
+DEVICE_ATTR(alscali,		S_IWUSR, NULL, als_store_cali);
 DEVICE_ATTR(psactive,		S_IWUSR | S_IRUGO, ps_show_active, ps_store_active);
 DEVICE_ATTR(psbatch,		S_IWUSR | S_IRUGO, ps_show_batch,  ps_store_batch);
 DEVICE_ATTR(psflush,		S_IWUSR | S_IRUGO, ps_show_flush,  ps_store_flush);
@@ -822,6 +849,7 @@ static struct attribute *als_attributes[] = {
 	&dev_attr_alsbatch.attr,
 	&dev_attr_alsflush.attr,
 	&dev_attr_alsdevnum.attr,
+	&dev_attr_alscali.attr,
 	NULL
 };
 
@@ -966,6 +994,7 @@ int als_register_control_path(struct als_control_path *ctl)
 	cxt->als_ctl.enable_nodata = ctl->enable_nodata;
 	cxt->als_ctl.batch = ctl->batch;
 	cxt->als_ctl.flush = ctl->flush;
+	cxt->als_ctl.set_cali = ctl->set_cali;
 	cxt->als_ctl.is_support_batch = ctl->is_support_batch;
 	cxt->als_ctl.is_report_input_direct = ctl->is_report_input_direct;
 	cxt->als_ctl.is_use_common_factory = ctl->is_use_common_factory;

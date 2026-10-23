@@ -72,6 +72,7 @@ struct als_control_path {
 	int (*batch)(int flag, int64_t samplingPeriodNs, int64_t maxBatchReportLatencyNs);
 	int (*flush)(void);/* open data rerport to HAL */
 	int (*access_data_fifo)(void);/* version2.used for flush operate */
+	int (*set_cali)(uint8_t *data, uint8_t count);
 	bool is_report_input_direct;
 	bool is_support_batch;/* version2.used for batch mode support flag */
 	bool is_polling_mode;

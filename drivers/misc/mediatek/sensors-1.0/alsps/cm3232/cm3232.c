@@ -48,6 +48,10 @@
 #define I2C_FLAG_READ 1
 
 #define GLASS_FACTOR 17 /*6% of glass redouce value*/
+/* als_cali is in percent; 100 leaves the lux unscaled, as in the stock driver */
+#define CM3232_ALS_CALI_DEFAULT 100
+/* Largest als_cali for which a full-scale reading still fits in an int */
+#define CM3232_ALS_CALI_MAX (INT_MAX / (GLASS_FACTOR * 0xFFFF * 32 / 1000))
 
 /******************************************************************************
  * extern functions
@@ -333,6 +337,19 @@ static int cm3232_get_als_value(struct cm3232_priv *obj, u16 als)
 	/* Keep the fixed-point result exact across the full 16-bit ADC range. */
 	value = (s64)GLASS_FACTOR * als * 32 * obj->als_cali;
 	return value / 1000;
+}
+
+static int cm3232_set_als_cali(int32_t cali)
+{
+	struct cm3232_priv *obj = cm3232_obj;
+
+	if (!obj)
+		return -ENODEV;
+	if (cali < 0 || cali > CM3232_ALS_CALI_MAX)
+		return -EINVAL;
+	/* 0 means not calibrated: the sensors HAL writes it when it has no saved value */
+	obj->als_cali = cali ? cali : CM3232_ALS_CALI_DEFAULT;
+	return 0;
 }
 
 /*-------------------------------attribute file for debugging----------------------------------*/
@@ -658,6 +675,28 @@ static DRIVER_ATTR(alsval, S_IWUSR | S_IRUGO, cm3232_show_alsval,
 static DRIVER_ATTR(trace, S_IWUSR | S_IRUGO, cm3232_show_trace,
 		   cm3232_store_trace);
 static DRIVER_ATTR(status, S_IWUSR | S_IRUGO, cm3232_show_status, NULL);
+
+static ssize_t cm3232_show_cali(struct device_driver *ddri, char *buf)
+{
+	if (!cm3232_obj) {
+		APS_ERR("cm3232_obj is null!!\n");
+		return 0;
+	}
+	return snprintf(buf, PAGE_SIZE, "%d\n", cm3232_obj->als_cali);
+}
+
+static ssize_t cm3232_store_cali(struct device_driver *ddri, const char *buf, size_t count)
+{
+	int cali, err;
+
+	err = kstrtoint(buf, 10, &cali);
+	if (err)
+		return err;
+	err = cm3232_set_als_cali(cali);
+	return err ? err : count;
+}
+
+static DRIVER_ATTR(cali, S_IWUSR | S_IRUGO, cm3232_show_cali, cm3232_store_cali);
 static DRIVER_ATTR(send, S_IWUSR | S_IRUGO, cm3232_show_send,
 		   cm3232_store_send);
 static DRIVER_ATTR(recv, S_IWUSR | S_IRUGO, cm3232_show_recv,
@@ -674,6 +713,7 @@ static struct driver_attribute *cm3232_attr_list[] = {
 	&driver_attr_send,
 	&driver_attr_recv,
 	&driver_attr_reg,
+	&driver_attr_cali,
 };
 
 /*----------------------------------------------------------------------------*/
@@ -1031,6 +1071,17 @@ static int als_flush(void)
 	return als_flush_report();
 }
 
+/* The sensors HAL writes the saved calibration as one native int32_t */
+static int als_set_cali(uint8_t *data, uint8_t count)
+{
+	int32_t cali;
+
+	if (count != sizeof(cali))
+		return -EINVAL;
+	memcpy(&cali, data, sizeof(cali));
+	return cm3232_set_als_cali(cali);
+}
+
 static int als_get_data(int *value, int *status)
 {
 	int err = 0;
@@ -1148,7 +1199,7 @@ static int cm3232_i2c_probe(struct i2c_client *client,
 	obj->enable = 0;
 	obj->pending_intr = 0;
 	obj->ps_cali = 100;
-	obj->als_cali = 100;
+	obj->als_cali = CM3232_ALS_CALI_DEFAULT;
 	obj->als_level_num =
 	    sizeof(obj->hw->als_level) / sizeof(obj->hw->als_level[0]);
 	obj->als_value_num =
@@ -1192,6 +1243,7 @@ static int cm3232_i2c_probe(struct i2c_client *client,
 	als_ctl.set_delay = als_set_delay;
 	als_ctl.batch = als_batch;
 	als_ctl.flush = als_flush;
+	als_ctl.set_cali = als_set_cali;
 	als_ctl.is_report_input_direct = false;
 	als_ctl.is_support_batch = false;
 
