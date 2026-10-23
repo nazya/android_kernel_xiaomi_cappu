@@ -860,6 +860,9 @@ typedef struct {
 			     unsigned int *lcm_value);
 	/* /////////////PWM///////////////////////////// */
 	void (*set_pwm_for_mix)(int enable);
+
+	/* Drain panel-private work before the display path lock is taken. */
+	void (*prepare_suspend)(void);
 } LCM_DRIVER;
 
 #if	defined(CONFIG_ARCH_MT6735) ||\

@@ -14,6 +14,7 @@
 #define LOG_TAG "DSI"
 
 #include <linux/delay.h>
+#include <linux/errno.h>
 #include <linux/time.h>
 #include <linux/string.h>
 #include <linux/mutex.h>
@@ -3392,28 +3393,135 @@ int ddp_dsi_dump(DISP_MODULE_ENUM module, int level)
 	return 0;
 }
 
+/* Serialized by esd_mode_switch_lock and the primary path mutex. */
+static struct {
+	cmdqRecHandle cmdq;
+	cmdqBackupSlotHandle slot;
+	DISP_MODULE_ENUM module;
+	unsigned int link;
+	unsigned int next_dual_link;
+	unsigned int rd_rdy_enabled;
+	bool read_queued;
+	bool passed;
+} dsi_esd;
+
+#define DSI_ESD_TRY(expr) \
+	do { \
+		ret = (expr); \
+		if (ret) \
+			return ret; \
+	} while (0)
+
+static int dsi_esd_build_cmdq(DISP_MODULE_ENUM module, cmdqRecHandle cmdq,
+			    CMDQ_STATE state)
+{
+	LCM_DSI_PARAMS *params;
+	DSI_T0_INS t0;
+	DSI_RX_DATA_REG data;
+	unsigned int base;
+	unsigned int link;
+	int i, ret;
+
+	if (state == CMDQ_ESD_ALLC_SLOT) {
+		if (dsi_esd.cmdq)
+			return -EBUSY;
+		link = module == DISP_MODULE_DSIDUAL ? dsi_esd.next_dual_link :
+			DSI_MODULE_to_ID(module);
+		DSI_ESD_TRY(cmdqBackupAllocateSlot(&dsi_esd.slot, 3));
+		dsi_esd.cmdq = cmdq;
+		dsi_esd.module = module;
+		dsi_esd.link = link;
+		dsi_esd.read_queued = false;
+		dsi_esd.passed = false;
+		dsi_esd.rd_rdy_enabled = DSI_REG[link]->DSI_INTEN.RD_RDY;
+		/* Avoid a level IRQ storm while CMDQ owns the read completion. */
+		DSI_OUTREGBIT(NULL, DSI_INT_ENABLE_REG, DSI_REG[link]->DSI_INTEN,
+			      RD_RDY, 0);
+		disp_dsi_cmdq_esd_own(link, true);
+		return 0;
+	}
+
+	if (dsi_esd.cmdq != cmdq || dsi_esd.module != module)
+		return -EINVAL;
+	link = dsi_esd.link;
+	params = &_dsi_context[link].dsi_params;
+	base = ddp_addr_convert_va2pa((unsigned long)DSI_REG[link]);
+
+	if (state == CMDQ_ESD_CHECK_READ) {
+		if (dsi_esd.read_queued || !params->lcm_esd_check_table[0].cmd)
+			return -EINVAL;
+		for (i = 0; i < 3 && params->lcm_esd_check_table[i].cmd; i++) {
+			t0.CONFG = 0x04;
+			t0.Data0 = params->lcm_esd_check_table[i].cmd;
+			t0.Data_ID = t0.Data0 < 0xB0 ? DSI_DCS_READ_PACKET_ID :
+				DSI_GERNERIC_READ_LONG_PACKET_ID;
+			t0.Data1 = 0;
+
+			/* Clear stale RD_RDY with W0C, preserving all other status. */
+			DSI_ESD_TRY(cmdqRecWrite(cmdq, base + 0x0c, ~1U, ~0U));
+			DSI_ESD_TRY(cmdqRecWrite(cmdq, base + 0x200, 0x00013700, ~0U));
+			DSI_ESD_TRY(cmdqRecWrite(cmdq, base + 0x204, AS_UINT32(&t0), ~0U));
+			DSI_ESD_TRY(cmdqRecWrite(cmdq, base + 0x60, 2, ~0U));
+			DSI_ESD_TRY(cmdqRecWrite(cmdq, base, 0, ~0U));
+			DSI_ESD_TRY(cmdqRecWrite(cmdq, base, 1, ~0U));
+			DSI_ESD_TRY(cmdqRecPoll(cmdq, base + 0x0c, 1, 1));
+			DSI_ESD_TRY(cmdqRecWrite(cmdq, base + 0x0c, ~1U, ~0U));
+			DSI_ESD_TRY(cmdqRecBackupRegisterToSlot(cmdq, dsi_esd.slot, i,
+							     base + 0x74));
+			DSI_ESD_TRY(cmdqRecWrite(cmdq, base + 0x84, 1, 1));
+			DSI_ESD_TRY(cmdqRecPoll(cmdq, base + 0x0c, 0, 0x80000000));
+		}
+		dsi_esd.read_queued = true;
+		return 0;
+	}
+
+	if (state == CMDQ_ESD_CHECK_CMP) {
+		/* The caller reaches CMP only after a successful synchronous flush. */
+		if (!dsi_esd.read_queued)
+			return -EINVAL;
+		for (i = 0; i < 3 && params->lcm_esd_check_table[i].cmd; i++) {
+			DSI_ESD_TRY(cmdqBackupReadSlot(dsi_esd.slot, i,
+						    (unsigned int *)&data));
+			DISPCHECK("[ESD]DSI%u cmd 0x%x response 0x%x\n", link,
+				  params->lcm_esd_check_table[i].cmd, AS_UINT32(&data));
+			MMProfileLogEx(ddp_mmp_get_events()->esd_rdlcm, MMProfileFlagPulse,
+				       AS_UINT32(&data),
+				       AS_UINT32(&params->lcm_esd_check_table[i]));
+			if (data.byte1 != params->lcm_esd_check_table[i].para_list[0])
+				return 1;
+		}
+		dsi_esd.passed = true;
+		return 0;
+	}
+
+	/* FREE follows synchronous flush/CMP or the CPU reset on failure. */
+	ret = cmdqBackupFreeSlot(dsi_esd.slot);
+	DSI_OUTREG32(NULL, &DSI_REG[link]->DSI_INTSTA, ~1U);
+	disp_dsi_cmdq_esd_own(link, false);
+	DSI_OUTREGBIT(NULL, DSI_INT_ENABLE_REG, DSI_REG[link]->DSI_INTEN,
+		      RD_RDY, dsi_esd.rd_rdy_enabled);
+	if (!ret && dsi_esd.passed && module == DISP_MODULE_DSIDUAL)
+		dsi_esd.next_dual_link ^= 1;
+	dsi_esd.cmdq = NULL;
+	dsi_esd.slot = 0;
+	return ret;
+}
+
+#undef DSI_ESD_TRY
+
 int ddp_dsi_build_cmdq(DISP_MODULE_ENUM module, void *cmdq_trigger_handle, CMDQ_STATE state)
 {
 	int ret = 0;
 	int i = 0;
-	int dsi_i = 0;
-	LCM_DSI_PARAMS *dsi_params = NULL;
-	DSI_T0_INS t0;
-	DSI_RX_DATA_REG read_data0;
-
-	static cmdqBackupSlotHandle hSlot;
-
-	if (DISP_MODULE_DSIDUAL == module)
-		dsi_i = 0;
-	else
-		dsi_i = DSI_MODULE_to_ID(module);
-
-	dsi_params = &_dsi_context[dsi_i].dsi_params;
+	LCM_DSI_PARAMS *dsi_params = &_dsi_context[DSI_MODULE_BEGIN(module)].dsi_params;
 
 	if (cmdq_trigger_handle == NULL) {
 		DISPCHECK("cmdq_trigger_handle is NULL\n");
 		return -1;
 	}
+	if (state == CMDQ_ESD_ALLC_SLOT || state == CMDQ_ESD_CHECK_READ ||
+	    state == CMDQ_ESD_CHECK_CMP || state == CMDQ_ESD_FREE_SLOT)
+		return dsi_esd_build_cmdq(module, cmdq_trigger_handle, state);
 
 	if (state == CMDQ_BEFORE_STREAM_SOF) {
 		/* need waiting te */
@@ -3455,123 +3563,6 @@ int ddp_dsi_build_cmdq(DISP_MODULE_ENUM module, void *cmdq_trigger_handle, CMDQ_
 		} else {
 			DISPERR("wrong module: %s\n", ddp_get_module_name(module));
 			return -1;
-		}
-	} else if (state == CMDQ_ESD_CHECK_READ) {
-		/* enable dsi interrupt: RD_RDY/CMD_DONE (need do this here?) */
-		DSI_OUTREGBIT(cmdq_trigger_handle, DSI_INT_ENABLE_REG, DSI_REG[dsi_i]->DSI_INTEN,
-			      RD_RDY, 1);
-		DSI_OUTREGBIT(cmdq_trigger_handle, DSI_INT_ENABLE_REG, DSI_REG[dsi_i]->DSI_INTEN,
-			      CMD_DONE, 1);
-
-		for (i = 0; i < 3; i++) {
-			if (dsi_params->lcm_esd_check_table[i].cmd == 0)
-				break;
-			/* 0. send read lcm command(short packet) */
-			t0.CONFG = 0x04;	/* /BTA */
-			t0.Data0 = dsi_params->lcm_esd_check_table[i].cmd;
-			/* / 0xB0 is used to distinguish DCS cmd or Gerneric cmd, is that Right??? */
-			t0.Data_ID =
-			    (t0.Data0 <
-			     0xB0) ? DSI_DCS_READ_PACKET_ID : DSI_GERNERIC_READ_LONG_PACKET_ID;
-			t0.Data1 = 0;
-
-
-			/* write DSI CMDQ */
-			DSI_OUTREG32(cmdq_trigger_handle, &DSI_CMDQ_REG[dsi_i]->data[0],
-				     0x00013700);
-			DSI_OUTREG32(cmdq_trigger_handle, &DSI_CMDQ_REG[dsi_i]->data[1],
-				     AS_UINT32(&t0));
-			DSI_OUTREG32(cmdq_trigger_handle, &DSI_REG[dsi_i]->DSI_CMDQ_SIZE, 2);
-
-			/* start DSI */
-			DSI_OUTREG32(cmdq_trigger_handle, &DSI_REG[dsi_i]->DSI_START, 0);
-			DSI_OUTREG32(cmdq_trigger_handle, &DSI_REG[dsi_i]->DSI_START, 1);
-
-			/* 1. wait DSI RD_RDY(must clear, in case of cpu RD_RDY interrupt handler) */
-			if (dsi_i == 0) {	/* DSI0 */
-				ret = cmdqRecPoll(cmdq_trigger_handle, 0x1401b00c, 0x1, 0x00000001);
-				ret =
-				    cmdqRecWrite(cmdq_trigger_handle, 0x1401b00c, 0x0, 0x00000001);
-			} else {	/* DSI1 */
-
-				ret = cmdqRecPoll(cmdq_trigger_handle, 0x1401c00c, 0x1, 0x00000001);
-				ret =
-				    cmdqRecWrite(cmdq_trigger_handle, 0x1401c00c, 0x0, 0x00000001);
-			}
-
-			/* 2. save RX data */
-			if (hSlot) {
-				cmdqRecBackupRegisterToSlot(cmdq_trigger_handle, hSlot, i,
-							    dsi_i ? 0x1401c074 : 0x1401b074);
-			}
-
-			/* 3. write RX_RACK */
-			DSI_OUTREGBIT(cmdq_trigger_handle, DSI_RACK_REG, DSI_REG[dsi_i]->DSI_RACK,
-				      DSI_RACK, 1);
-
-			/* 4. polling not busy(no need clear) */
-			if (dsi_i == 0) {	/* DSI0 */
-				ret = cmdqRecPoll(cmdq_trigger_handle, 0x1401b00c, 0, 0x80000000);
-			} else {	/* DSI1 */
-
-				ret = cmdqRecPoll(cmdq_trigger_handle, 0x1401c00c, 0, 0x80000000);
-			}
-			/* loop: 0~4 */
-		}
-
-		/* DSI_OUTREGBIT(cmdq_trigger_handle, DSI_INT_ENABLE_REG,DSI_REG[dsi_i]->DSI_INTEN,RD_RDY,0); */
-	} else if (state == CMDQ_ESD_CHECK_CMP) {
-
-		DISPCHECK("[wwy]enter cmp\n");
-		/* cmp just once and only 1 return value */
-		for (i = 0; i < 3; i++) {
-			if (dsi_params->lcm_esd_check_table[i].cmd == 0)
-				break;
-			DISPCHECK("[wwy]enter cmp i=%d\n", i);
-
-			/* read data */
-			if (hSlot) {
-				/* read from slot */
-				cmdqBackupReadSlot(hSlot, i, (unsigned int *)&read_data0);
-			} else {
-				/* read from dsi , support only one cmd read */
-				if (i == 0) {
-					DSI_OUTREG32(NULL, &read_data0,
-						     AS_UINT32(&DSI_REG[dsi_i]->DSI_RX_DATA0));
-				}
-			}
-
-			MMProfileLogEx(ddp_mmp_get_events()->esd_rdlcm, MMProfileFlagPulse,
-				       AS_UINT32(&read_data0),
-				       AS_UINT32(&(dsi_params->lcm_esd_check_table[i])));
-
-			DISPCHECK("[wwy]enter cmp read_data0=0x%x\n", AS_UINT32(&read_data0));
-			DISPCHECK("[wwy]enter cmp check_table=0x%x\n",
-				  AS_UINT32(&dsi_params->lcm_esd_check_table[i]));
-			DISPCHECK("[wwy]enter cmp DSI+0x200=0x%x\n", AS_UINT32(0xF401b000 + 0x200));
-			DISPCHECK("[wwy]enter cmp DSI+0x204=0x%x\n", AS_UINT32(0xF401b000 + 0x204));
-			DISPCHECK("[wwy]enter cmp DSI+0x60=0x%x\n", AS_UINT32(0xF401b000 + 0x60));
-			DISPCHECK("[wwy]enter cmp DSI+0x74=0x%x\n", AS_UINT32(0xF401b000 + 0x74));
-			DISPCHECK("[wwy]enter cmp DSI+0x88=0x%x\n", AS_UINT32(0xF401b000 + 0x88));
-			DISPCHECK("[wwy]enter cmp DSI+0x0c=0x%x\n", AS_UINT32(0xF401b000 + 0x0c));
-
-			if (read_data0.byte1 == dsi_params->lcm_esd_check_table[i].para_list[0]) {
-				/* clear rx data */
-				/* DSI_OUTREG32(NULL, &DSI_REG[dsi_i]->DSI_RX_DATA0,0); */
-				ret = 0;	/* esd pass */
-			} else {
-				ret = 1;	/* esd fail */
-				break;
-			}
-		}
-
-	} else if (state == CMDQ_ESD_ALLC_SLOT) {
-		/* create 3 slot */
-		cmdqBackupAllocateSlot(&hSlot, 3);
-	} else if (state == CMDQ_ESD_FREE_SLOT) {
-		if (hSlot) {
-			cmdqBackupFreeSlot(hSlot);
-			hSlot = 0;
 		}
 	} else if (state == CMDQ_STOP_VDO_MODE) {
 		/* use cmdq to stop dsi vdo mode */

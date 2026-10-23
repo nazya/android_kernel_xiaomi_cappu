@@ -35,6 +35,26 @@ static wait_queue_head_t disp_irq_log_wq;
 static int disp_irq_log_module;
 
 static int irq_init;
+static bool irq_requested[DISP_MODULE_NUM];
+static bool dsi_cmdq_esd_owned[2];
+
+/* Sleepable ESD context, with the primary path locked and RD_RDY IRQ masked. */
+void disp_dsi_cmdq_esd_own(unsigned int index, bool owned)
+{
+	DISP_MODULE_ENUM module = index ? DISP_MODULE_DSI1 : DISP_MODULE_DSI0;
+
+	if (owned)
+		WRITE_ONCE(dsi_cmdq_esd_owned[index], true);
+	/*
+	 * Claim: drain old callbacks before submission. Release: after the final
+	 * W0C clear, drain stale status snapshots while ownership is still true.
+	 */
+	smp_mb();
+	if (irq_requested[module])
+		synchronize_irq(ddp_irq_map[module]);
+	if (!owned)
+		WRITE_ONCE(dsi_cmdq_esd_owned[index], false);
+}
 
 static unsigned int cnt_rdma_underflow[3];
 static unsigned int cnt_rdma_abnormal[3];
@@ -240,6 +260,9 @@ irqreturn_t disp_irq_handler(int irq, void *dev_id)
 		    (irq == ddp_irq_map[DISP_MODULE_DSI0]) ? DISP_MODULE_DSI0 : DISP_MODULE_DSI1;
 		reg_val =
 		    (DISP_REG_GET(DISPSYS_DSI0_BASE + 0xC + index * DISP_INDEX_OFFSET) & 0xff);
+		/* INTSTA is W0C: preserve CMDQ's RD_RDY and hide it from callbacks. */
+		if (READ_ONCE(dsi_cmdq_esd_owned[index]))
+			reg_val &= ~1U;
 		DISP_CPU_REG_SET(DISPSYS_DSI0_BASE + 0xC + index * DISP_INDEX_OFFSET, ~reg_val);
 		/* MMProfileLogEx(ddp_mmp_get_events()->DSI_IRQ[index], MMProfileFlagPulse, reg_val, 0); */
 	} else if (irq == ddp_irq_map[DISP_MODULE_DPI0] || irq == ddp_irq_map[DISP_MODULE_DPI1]) {
@@ -562,6 +585,7 @@ int ddp_irq_init(void)
 				       i, ddp_irq_map[i]);
 				return ret;
 			}
+			irq_requested[i] = true;
 		}
 	}
 

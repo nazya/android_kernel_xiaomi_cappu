@@ -12,6 +12,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/semaphore.h>
 #include <linux/module.h>
@@ -113,6 +114,8 @@ static unsigned int primary_session_id = MAKE_DISP_SESSION(DISP_SESSION_PRIMARY,
 unsigned long long last_primary_trigger_time = 0xffffffffffffffff;
 
 static void disp_set_sodi(unsigned int enable, void *cmdq_handle);
+static void disp_set_sodi_unconditional(unsigned int enable, void *cmdq_handle);
+static int primary_suspend_release_fence(void);
 
 /* DDP_SCENARIO_ENUM ddp_scenario = DDP_SCENARIO_SUB_RDMA1_DISP; */
 #ifdef DISP_SWITCH_DST_MODE
@@ -1696,20 +1699,31 @@ int _esd_check_config_handle_cmd(void)
 	int ret = 0;		/* 0:success */
 
 	/* 1.reset */
-	cmdqRecReset(pgc->cmdq_handle_config_esd);
+	ret = cmdqRecReset(pgc->cmdq_handle_config_esd);
+	if (ret)
+		goto done;
 
 	/* 2.write first instruction */
 	/* cmd mode: wait CMDQ_SYNC_TOKEN_STREAM_EOF(wait trigger thread done) */
-	cmdqRecWaitNoClear(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_STREAM_EOF);
+	ret = cmdqRecWaitNoClear(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_STREAM_EOF);
+	if (ret)
+		goto done;
 
 	/* 3.clear CMDQ_SYNC_TOKEN_ESD_EOF(trigger thread need wait this sync token) */
-	cmdqRecClearEventToken(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_ESD_EOF);
+	ret = cmdqRecClearEventToken(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_ESD_EOF);
+	if (ret)
+		goto done;
 
 	/* 4.write instruction(read from lcm) */
-	dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd, CMDQ_ESD_CHECK_READ);
+	ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
+				    CMDQ_ESD_CHECK_READ);
+	if (ret)
+		goto done;
 
 	/* 5.set CMDQ_SYNC_TOKE_ESD_EOF(trigger thread can work now) */
-	cmdqRecSetEventToken(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_ESD_EOF);
+	ret = cmdqRecSetEventToken(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_ESD_EOF);
+	if (ret)
+		goto done;
 
 	/* 6.flush instruction */
 	dprec_logger_start(DPREC_LOGGER_ESD_CMDQ, 0, 0);
@@ -1717,9 +1731,8 @@ int _esd_check_config_handle_cmd(void)
 	dprec_logger_done(DPREC_LOGGER_ESD_CMDQ, 0, 0);
 
 
+done:
 	DISPCHECK("[ESD]_esd_check_config_handle_cmd ret=%d\n", ret);
-
-/* done: */
 	if (ret)
 		ret = 1;
 	return ret;
@@ -1727,47 +1740,71 @@ int _esd_check_config_handle_cmd(void)
 
 /* For Vdo Mode Read LCM Check */
 /* Config cmdq_handle_config_esd */
-int _esd_check_config_handle_vdo(void)
+int _esd_check_config_handle_vdo(bool *restore_sodi)
 {
 	int ret = 0;		/* 0:success , 1:fail */
+	bool use_sodi = false;
+
+	*restore_sodi = false;
+#ifdef DISP_ENABLE_SODI
+	/* Pair disable/enable even if the debug policy changes during the check. */
+	use_sodi = gESDEnableSODI == 1 && gEnableSODIControl == 1;
+#endif
 
 	/* 1.reset */
-	cmdqRecReset(pgc->cmdq_handle_config_esd);
+	ret = cmdqRecReset(pgc->cmdq_handle_config_esd);
+	if (ret)
+		goto done;
 
 	/* wait stream eof first */
-	if (gEnableMutexRisingEdge == 1)
-		cmdqRecWait(pgc->cmdq_handle_config_esd, CMDQ_EVENT_MUTEX0_STREAM_EOF);
+	if (gEnableMutexRisingEdge == 1) {
+		ret = cmdqRecWait(pgc->cmdq_handle_config_esd, CMDQ_EVENT_MUTEX0_STREAM_EOF);
+		if (ret)
+			goto done;
+	}
 
-	cmdqRecWait(pgc->cmdq_handle_config_esd, CMDQ_EVENT_MUTEX0_STREAM_EOF);
+	ret = cmdqRecWait(pgc->cmdq_handle_config_esd, CMDQ_EVENT_MUTEX0_STREAM_EOF);
+	if (ret)
+		goto done;
 
 	/* disable SODI by CMDQ */
-	if (gESDEnableSODI == 1)
-		disp_set_sodi(0, pgc->cmdq_handle_config_esd);
+	if (use_sodi)
+		disp_set_sodi_unconditional(0, pgc->cmdq_handle_config_esd);
 
 	/* 2.stop dsi vdo mode */
-	dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd, CMDQ_STOP_VDO_MODE);
+	ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
+				    CMDQ_STOP_VDO_MODE);
+	if (ret)
+		goto done;
 
 	/* 3.write instruction(read from lcm) */
-	dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd, CMDQ_ESD_CHECK_READ);
+	ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
+				    CMDQ_ESD_CHECK_READ);
+	if (ret)
+		goto done;
 
 	/* 4.start dsi vdo mode */
-	dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd, CMDQ_START_VDO_MODE);
+	ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
+				    CMDQ_START_VDO_MODE);
+	if (ret)
+		goto done;
 
 	/* 5. trigger path */
 	dpmgr_path_trigger(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd, CMDQ_ENABLE);
 
 	/* enable SODI by  CMDQ */
-	if (gESDEnableSODI == 1)
-		disp_set_sodi(1, pgc->cmdq_handle_config_esd);
+	if (use_sodi)
+		disp_set_sodi_unconditional(1, pgc->cmdq_handle_config_esd);
 
 	/* 6.flush instruction */
 	dprec_logger_start(DPREC_LOGGER_ESD_CMDQ, 0, 0);
 	ret = cmdqRecFlush(pgc->cmdq_handle_config_esd);
 	dprec_logger_done(DPREC_LOGGER_ESD_CMDQ, 0, 0);
+	/* A timeout may skip the queued enable. Restore after the CPU DSI reset. */
+	*restore_sodi = ret && use_sodi;
 
+done:
 	DISPCHECK("[ESD]_esd_check_config_handle_vdo ret=%d\n", ret);
-
-/* done: */
 	if (ret)
 		ret = 1;
 	return ret;
@@ -1780,6 +1817,8 @@ int _esd_check_config_handle_vdo(void)
 int primary_display_esd_check(void)
 {
 	int ret = 0;
+	int free_ret;
+	bool restore_sodi = false;
 #ifndef DISP_SUPPORT_CMDQ
 	return 0;
 #endif
@@ -1789,19 +1828,19 @@ int primary_display_esd_check(void)
 	MMProfileLogEx(ddp_mmp_get_events()->esd_check_t, MMProfileFlagStart, 0, 0);
 	DISPCHECK("[ESD]ESD check begin\n");
 
+	/* Keep the read transaction powered and exclude path reconfiguration. */
 	_primary_path_lock(__func__);
 	if (pgc->state == DISP_SLEPT) {
 		MMProfileLogEx(ddp_mmp_get_events()->esd_check_t, MMProfileFlagPulse, 1, 0);
 		DISPCHECK("[ESD]primary display path is slept?? -- skip esd check\n");
-		_primary_path_unlock(__func__);
-		goto done;
+		goto unlock;
 	}
-	_primary_path_unlock(__func__);
 #ifdef MTK_DISP_IDLE_LP
 	_disp_primary_path_dsi_clock_on(0);
 #endif
 	/* Esd Check : EXT TE */
 	if (pgc->plcm->params->dsi.customization_esd_check_enable == 0) {
+		_primary_path_unlock(__func__);
 		MMProfileLogEx(ddp_mmp_get_events()->esd_extte, MMProfileFlagStart, 0, 0);
 		if (primary_display_is_video_mode()) {
 			if (_need_register_eint()) {
@@ -1826,6 +1865,7 @@ int primary_display_esd_check(void)
 			}
 		}
 		MMProfileLogEx(ddp_mmp_get_events()->esd_extte, MMProfileFlagEnd, 0, ret);
+		_primary_path_lock(__func__);
 		goto done;
 	}
 	/* / Esd Check : Read from lcm */
@@ -1834,15 +1874,24 @@ int primary_display_esd_check(void)
 	if (primary_display_cmdq_enabled()) {
 		MMProfileLogEx(ddp_mmp_get_events()->esd_rdlcm, MMProfileFlagPulse, 0, 1);
 		/* 0.create esd check cmdq */
-		cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &(pgc->cmdq_handle_config_esd));
-		dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
-				      CMDQ_ESD_ALLC_SLOT);
+		ret = cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK,
+				    &pgc->cmdq_handle_config_esd);
+		if (ret) {
+			ret = 1;
+			goto done;
+		}
+		ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
+					    CMDQ_ESD_ALLC_SLOT);
+		if (ret) {
+			ret = 1;
+			goto destroy_handle;
+		}
 		MMProfileLogEx(ddp_mmp_get_events()->esd_rdlcm, MMProfileFlagPulse, 0, 2);
 		DISPCHECK("[ESD]ESD config thread=0x%p\n", pgc->cmdq_handle_config_esd);
 
 		/* 1.use cmdq to read from lcm */
 		if (primary_display_is_video_mode())
-			ret = _esd_check_config_handle_vdo();
+			ret = _esd_check_config_handle_vdo(&restore_sodi);
 		else
 			ret = _esd_check_config_handle_cmd();
 
@@ -1856,6 +1905,8 @@ int primary_display_esd_check(void)
 			/* do dsi reset */
 			dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
 					      CMDQ_DSI_RESET);
+			if (restore_sodi)
+				disp_set_sodi_unconditional(1, NULL);
 			goto destroy_cmdq;
 		}
 
@@ -1871,8 +1922,11 @@ int primary_display_esd_check(void)
 
 
 destroy_cmdq:
-		dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
-				      CMDQ_ESD_FREE_SLOT);
+		free_ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle,
+						 pgc->cmdq_handle_config_esd, CMDQ_ESD_FREE_SLOT);
+		if (free_ret)
+			ret = 1;
+destroy_handle:
 		/* 3.destroy esd config thread */
 		cmdqRecDestroy(pgc->cmdq_handle_config_esd);
 		pgc->cmdq_handle_config_esd = NULL;
@@ -1885,7 +1939,6 @@ destroy_cmdq:
 		/* / 4: unlock path */
 
 		MMProfileLogEx(ddp_mmp_get_events()->esd_rdlcm, MMProfileFlagPulse, 0, 1);
-		_primary_path_lock(__func__);
 
 		/* / 1: stop path */
 		DISPCHECK("[ESD]display cmdq trigger loop stop[begin]\n");
@@ -1937,15 +1990,16 @@ destroy_cmdq:
 		_cmdq_start_trigger_loop();
 		DISPCHECK("[ESD]start cmdq trigger loop[end]\n");
 
-		_primary_path_unlock(__func__);
 	}
 	MMProfileLogEx(ddp_mmp_get_events()->esd_rdlcm, MMProfileFlagEnd, 0, ret);
 
 done:
-	_primary_path_esd_check_unlock();
 #ifdef MTK_DISP_IDLE_LP
 	_disp_primary_path_dsi_clock_off(0);
 #endif
+unlock:
+	_primary_path_unlock(__func__);
+	_primary_path_esd_check_unlock();
 	DISPCHECK("[ESD]ESD check end\n");
 	MMProfileLogEx(ddp_mmp_get_events()->esd_check_t, MMProfileFlagEnd, 0, ret);
 	dprec_logger_done(DPREC_LOGGER_ESD_CHECK, 0, 0);
@@ -2011,7 +2065,17 @@ static int primary_display_esd_check_worker_kthread(void *data)
 			i = esd_try_cnt;
 			while (i--) {
 				DISPCHECK("[ESD]esd recovery try:%d\n", i);
-				primary_display_esd_recovery();
+				ret = primary_display_esd_recovery();
+				if (ret) {
+					/*
+					 * A hard panel-I/O failure leaves the display in the
+					 * normal slept state.  Keep the worker armed: checks are
+					 * harmlessly skipped while slept and resume automatically
+					 * after the next real unblank.
+					 */
+					DISPERR("[ESD]terminal recovery failure, waiting for unblank\n");
+					break;
+				}
 				ret = primary_display_esd_check();
 				if (ret == 0) {
 					DISPCHECK("[ESD]esd recovery success\n");
@@ -2040,11 +2104,11 @@ static int primary_display_esd_check_worker_kthread(void *data)
 #endif
 
 /* ESD RECOVERY */
-static struct platform_device *pregulator;
 int primary_display_esd_recovery(void)
 {
-	DISP_STATUS ret = DISP_STATUS_OK;
-	LCM_PARAMS *lcm_param = NULL;
+	int ret = 0;
+	int event_ret;
+	int panel_try;
 
 	DISPFUNC();
 #ifndef DISP_SUPPORT_CMDQ
@@ -2053,9 +2117,14 @@ int primary_display_esd_recovery(void)
 	dprec_logger_start(DPREC_LOGGER_ESD_RECOVERY, 0, 0);
 	MMProfileLogEx(ddp_mmp_get_events()->esd_recovery_t, MMProfileFlagStart, 0, 0);
 	DISPCHECK("[ESD]ESD recovery begin\n");
+	_primary_path_esd_check_lock();
+	if (disp_lcm_prepare_suspend(pgc->plcm)) {
+		DISPERR("[ESD]failed to prepare panel recovery\n");
+		ret = -1;
+		goto done_without_path_lock;
+	}
 	_primary_path_lock(__func__);
 
-	lcm_param = disp_lcm_get_params(pgc->plcm);
 	if (pgc->state == DISP_SLEPT) {
 		DISPCHECK("[ESD]esd recovery but primary display path is slept??\n");
 		goto done;
@@ -2067,9 +2136,9 @@ int primary_display_esd_recovery(void)
 
 	if (dpmgr_path_is_busy(pgc->dpmgr_handle)) {
 		DISPCHECK("[ESD]primary display path is busy\n");
-		ret =
+		event_ret =
 		    dpmgr_wait_event_timeout(pgc->dpmgr_handle, DISP_PATH_EVENT_FRAME_DONE, HZ * 1);
-		DISPCHECK("[ESD]wait frame done ret:%d\n", ret);
+		DISPCHECK("[ESD]wait frame done ret:%d\n", event_ret);
 	}
 
 	DISPCHECK("[ESD]stop dpmgr path[begin]\n");
@@ -2078,17 +2147,40 @@ int primary_display_esd_recovery(void)
 
 	if (dpmgr_path_is_busy(pgc->dpmgr_handle)) {
 		DISPCHECK("[ESD]primary display path is busy after stop\n");
-		dpmgr_wait_event_timeout(pgc->dpmgr_handle, DISP_PATH_EVENT_FRAME_DONE, HZ * 1);
-		DISPCHECK("[ESD]wait frame done ret:%d\n", ret);
+		event_ret = dpmgr_wait_event_timeout(pgc->dpmgr_handle,
+						     DISP_PATH_EVENT_FRAME_DONE, HZ * 1);
+		DISPCHECK("[ESD]wait frame done ret:%d\n", event_ret);
 	}
 
 	DISPCHECK("[ESD]reset display path[begin]\n");
 	dpmgr_path_reset(pgc->dpmgr_handle, CMDQ_DISABLE);
 	DISPCHECK("[ESD]reset display path[end]\n");
 
-	DISPCHECK("[ESD]lcm force init[begin]\n");
-	disp_lcm_init(pregulator, pgc->plcm, 1);
-	DISPCHECK("[ESD]lcm force init[end]\n");
+	DISPCHECK("[ESD]lcm recovery[begin]\n");
+	for (panel_try = 5; panel_try > 0; panel_try--) {
+		ret = disp_lcm_esd_recover(pgc->plcm);
+		if (!ret)
+			break;
+		DISPERR("[ESD]lcm recovery failed, %d attempts remain\n",
+			panel_try - 1);
+	}
+	if (ret) {
+		/*
+		 * The panel callback left its host and rails safely off.  Finish the
+		 * matching display suspend accounting before exposing DISP_SLEPT;
+		 * otherwise clients could configure a dead path or the next resume
+		 * could take duplicate clock references.
+		 */
+		primary_suspend_release_fence();
+		dpmgr_path_power_off(pgc->dpmgr_handle, CMDQ_DISABLE);
+		if (_is_decouple_mode(pgc->session_mode))
+			dpmgr_path_power_off(pgc->ovl2mem_path_handle, CMDQ_DISABLE);
+		primary_trigger_cnt = 0;
+		pgc->state = DISP_SLEPT;
+		ret = -EIO;
+		goto done;
+	}
+	DISPCHECK("[ESD]lcm recovery[end]\n");
 
 	DISPCHECK("[ESD]start dpmgr path[begin]\n");
 	dpmgr_path_start(pgc->dpmgr_handle, CMDQ_DISABLE);
@@ -2111,6 +2203,8 @@ int primary_display_esd_recovery(void)
 
 done:
 	_primary_path_unlock(__func__);
+done_without_path_lock:
+	_primary_path_esd_check_unlock();
 	DISPCHECK("[ESD]ESD recovery end\n");
 	MMProfileLogEx(ddp_mmp_get_events()->esd_recovery_t, MMProfileFlagEnd, 0, 0);
 	dprec_logger_done(DPREC_LOGGER_ESD_RECOVERY, 0, 0);
@@ -2395,30 +2489,31 @@ static void disp_sodi_set_dram_self_refresh(unsigned int enable, void *cmdq_hand
 
 #define DISP_REG_SODI_PA 0x10006b0c
 /*enable/disable DRAM self-refresh by spm interface*/
-static void disp_set_sodi(unsigned int enable, void *cmdq_handle)
+static void disp_set_sodi_unconditional(unsigned int enable, void *cmdq_handle)
 {
 /*wrokround for kernel 3.18*/
 #ifdef DISP_ENABLE_SODI
-	if (gEnableSODIControl == 1) {
-
-		if (cmdq_handle != NULL) {
-			if (enable == 1)
-				cmdqRecWrite(cmdq_handle, DISP_REG_SODI_PA, 0, 1);
-			else
-				cmdqRecWrite(cmdq_handle, DISP_REG_SODI_PA, 1, 1);
-		} else {
-			if (enable == 1)
-				DISP_REG_SET(0, (unsigned long)SPM_PCM_SRC_REQ,
-					     DISP_REG_GET(SPM_PCM_SRC_REQ) & (~0x1));
-			else
-				DISP_REG_SET(0, (unsigned long)SPM_PCM_SRC_REQ,
-					     DISP_REG_GET(SPM_PCM_SRC_REQ) | 0x1);
-		}
-
+	if (cmdq_handle != NULL) {
+		if (enable == 1)
+			cmdqRecWrite(cmdq_handle, DISP_REG_SODI_PA, 0, 1);
+		else
+			cmdqRecWrite(cmdq_handle, DISP_REG_SODI_PA, 1, 1);
+	} else {
+		if (enable == 1)
+			DISP_REG_SET(0, (unsigned long)SPM_PCM_SRC_REQ,
+				     DISP_REG_GET(SPM_PCM_SRC_REQ) & (~0x1));
+		else
+			DISP_REG_SET(0, (unsigned long)SPM_PCM_SRC_REQ,
+				     DISP_REG_GET(SPM_PCM_SRC_REQ) | 0x1);
 	}
 #endif
 }
 
+static void disp_set_sodi(unsigned int enable, void *cmdq_handle)
+{
+	if (gEnableSODIControl == 1)
+		disp_set_sodi_unconditional(enable, cmdq_handle);
+}
 
 
 int primary_display_change_lcm_resolution(unsigned int width, unsigned int height)
@@ -2810,7 +2905,6 @@ int primary_display_init(struct platform_device *dev, char *lcm_name, unsigned i
 	disp_ddp_path_config *data_config = NULL;
 
 	DISPFUNC();
-	pregulator = dev;
 	dprec_init();
 	/* xuecheng, for debug */
 	/* dprec_handle_option(0x3); */
@@ -3172,7 +3266,7 @@ unsigned int primary_display_get_ticket(void)
 	return dprec_get_vsync_count();
 }
 
-int primary_suspend_release_fence(void)
+static int primary_suspend_release_fence(void)
 {
 	unsigned int session = (unsigned int)((DISP_SESSION_PRIMARY) << 16 | (0));
 	unsigned int i = 0;
@@ -3196,6 +3290,9 @@ int primary_display_suspend(void)
 	primary_display_switch_dst_mode(primary_display_def_dst_mode);
 #endif
 	disp_sw_mutex_lock(&(pgc->capture_lock));
+	_primary_path_esd_check_lock();
+	if (disp_lcm_prepare_suspend(pgc->plcm))
+		DISPERR("failed to prepare panel suspend\n");
 	_primary_path_lock(__func__);
 	if (pgc->state == DISP_SLEPT) {
 		DISPCHECK("primary display path is already sleep, skip\n");
@@ -3279,6 +3376,7 @@ int primary_display_suspend(void)
 	pgc->state = DISP_SLEPT;
 done:
 	_primary_path_unlock(__func__);
+	_primary_path_esd_check_unlock();
 	disp_sw_mutex_unlock(&(pgc->capture_lock));
 #ifdef CONFIG_MTK_AEE_POWERKEY_HANG_DETECT
 	aee_kernel_wdt_kick_Powkey_api("mtkfb_early_suspend", WDT_SETBY_Display);
@@ -3306,6 +3404,9 @@ int primary_display_resume(void)
 		goto done;
 	}
 	MMProfileLogEx(ddp_mmp_get_events()->primary_resume, MMProfileFlagPulse, 0, 1);
+
+	/* The cappu panel's 1.8 V rail must precede the DSI host clocks. */
+	disp_lcm_resume_power(pgc->plcm);
 
 	DISPCHECK("dpmanager path power on[begin]\n");
 	dpmgr_path_power_on(pgc->dpmgr_handle, CMDQ_DISABLE);

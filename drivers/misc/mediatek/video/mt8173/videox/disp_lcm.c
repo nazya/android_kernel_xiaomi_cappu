@@ -703,7 +703,8 @@ int disp_lcm_esd_recover(disp_lcm_handle *plcm)
 	if (_is_lcm_inited(plcm)) {
 		lcm_drv = plcm->drv;
 		if (lcm_drv->esd_recover) {
-			lcm_drv->esd_recover();
+			if (!lcm_drv->esd_recover())
+				return -1;
 		} else {
 			DISPERR("FATAL ERROR, lcm_drv->esd_check is null\n");
 			return -1;
@@ -713,6 +714,22 @@ int disp_lcm_esd_recover(disp_lcm_handle *plcm)
 	}
 	DISPERR("lcm_drv is null\n");
 	return -1;
+}
+
+int disp_lcm_prepare_suspend(disp_lcm_handle *plcm)
+{
+	LCM_DRIVER *lcm_drv;
+
+	if (!_is_lcm_inited(plcm)) {
+		DISPERR("lcm_drv is null\n");
+		return -1;
+	}
+
+	lcm_drv = plcm->drv;
+	if (lcm_drv->prepare_suspend)
+		lcm_drv->prepare_suspend();
+
+	return 0;
 }
 
 int disp_lcm_suspend(disp_lcm_handle *plcm)
@@ -741,6 +758,24 @@ int disp_lcm_suspend(disp_lcm_handle *plcm)
 	return -1;
 }
 
+int disp_lcm_resume_power(disp_lcm_handle *plcm)
+{
+	LCM_DRIVER *lcm_drv;
+
+	DISPFUNC();
+
+	if (!_is_lcm_inited(plcm)) {
+		DISPERR("lcm_drv is null\n");
+		return -1;
+	}
+
+	lcm_drv = plcm->drv;
+	if (lcm_drv->resume_power)
+		lcm_drv->resume_power();
+
+	return 0;
+}
+
 int disp_lcm_resume(disp_lcm_handle *plcm)
 {
 	/*DISPFUNC(); */
@@ -750,9 +785,6 @@ int disp_lcm_resume(disp_lcm_handle *plcm)
 
 	if (_is_lcm_inited(plcm)) {
 		lcm_drv = plcm->drv;
-
-		if (lcm_drv->resume_power)
-			lcm_drv->resume_power();
 
 		if (lcm_drv->resume) {
 			lcm_drv->resume();

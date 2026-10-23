@@ -13,6 +13,7 @@
  */
 
 #include <linux/string.h>
+#include <linux/errno.h>
 #include <linux/wait.h>
 #include <linux/platform_device.h>
 #include <linux/gpio.h>
@@ -300,18 +301,24 @@ static void lcm_dimming_enable_delayed_work(struct work_struct *work)
 
 static DECLARE_DELAYED_WORK(open_lcm_dimming, lcm_dimming_enable_delayed_work);
 
-static void lcm_suspend(void)
+static void lcm_prepare_suspend(void)
 {
-	LCM_LOGI("%s enter\n", __func__);
-
+	/* The worker takes the primary display lock; drain it before that lock. */
 	cancel_delayed_work_sync(&open_lcm_dimming);
+}
 
-	LCM_LOGI("push_table\n");
-	push_table(lcm_deep_sleep_mode_in_setting,
-		   sizeof(lcm_deep_sleep_mode_in_setting) / sizeof(struct LCM_setting_table), 1);
+static void lcm_force_power_off(bool send_sleep)
+{
+	if (send_sleep) {
+		LCM_LOGI("push_table\n");
+		push_table(lcm_deep_sleep_mode_in_setting,
+			   sizeof(lcm_deep_sleep_mode_in_setting) /
+			   sizeof(struct LCM_setting_table), 1);
+	}
 
-	ddp_dsi_power_off(32, NULL);
-	MDELAY(140);
+	ddp_dsi_power_off(DISP_MODULE_DSIDUAL, NULL);
+	if (send_sleep)
+		MDELAY(140);
 
 	LCM_LOGI("GPIO_LCD_RST_EN down\n");
 	lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ZERO);
@@ -328,15 +335,21 @@ static void lcm_suspend(void)
 
 	LCM_LOGI("GPIO_LCD_1V8_EN down\n");
 	lcm_set_gpio_output(GPIO_LCD_1V8_EN, GPIO_OUT_ZERO);
+}
+
+static void lcm_suspend(void)
+{
+	LCM_LOGI("%s enter\n", __func__);
+	lcm_force_power_off(true);
 
 	LCM_LOGI("%s exit\n", __func__);
 }
 
-static void lcm_resume(void)
+static int lcm_resume_sequence(bool fail_fast)
 {
 	unsigned char cmd = 0x0;
 	unsigned char data = 0x10;
-	int ret = 0;
+	int ret;
 
 	LCM_LOGI("%s enter\n", __func__);
 
@@ -344,10 +357,13 @@ static void lcm_resume(void)
 	lcm_set_gpio_output(GPIO_LCD_VSP_EN, GPIO_OUT_ONE);
 	MDELAY(2);
 	ret = tps65132_write_bytes(cmd, data);
-	if (ret < 0)
+	if (ret != 2) {
 		LCM_LOGI("tps65132-cmd=%0x i2c write error\n", cmd);
-	else
+		if (fail_fast)
+			return ret < 0 ? ret : -EIO;
+	} else {
 		LCM_LOGI("tps65132-cmd=%0x i2c write success\n", cmd);
+	}
 	MDELAY(12);
 
 	LCM_LOGI("enable vsn\n");
@@ -355,10 +371,13 @@ static void lcm_resume(void)
 	MDELAY(2);
 	cmd = 0x01;
 	ret = tps65132_write_bytes(cmd, data);
-	if (ret < 0)
+	if (ret != 2) {
 		LCM_LOGI("tps65132-cmd=%0x i2c write error\n", cmd);
-	else
+		if (fail_fast)
+			return ret < 0 ? ret : -EIO;
+	} else {
 		LCM_LOGI("tps65132-cmd=%0x i2c write success\n", cmd);
+	}
 	MDELAY(24);
 
 	LCM_LOGI("rst up1\n");
@@ -383,6 +402,13 @@ static void lcm_resume(void)
 	schedule_delayed_work(&open_lcm_dimming, msecs_to_jiffies(500));
 
 	LCM_LOGI("%s exit\n", __func__);
+	return 0;
+}
+
+static void lcm_resume(void)
+{
+	/* Preserve the stock normal-resume behavior; ESD recovery is strict. */
+	(void)lcm_resume_sequence(false);
 }
 
 typedef void (*send_cmd)(struct LCM_setting_table *table, unsigned int count, unsigned char force_update);
@@ -407,14 +433,36 @@ static void lcm_resume_power(void)
 	LCM_LOGI("%s, end\n", __func__);
 }
 
+extern int ddp_dsi_power_on(DISP_MODULE_ENUM module, void *cmdq_handle);
+
+static unsigned int lcm_esd_recover(void)
+{
+	int ret;
+
+	/* Preserve Xiaomi's rail -> DSI hosts -> bias/reset/register ordering. */
+	lcm_force_power_off(false);
+	lcm_resume_power();
+	ddp_dsi_power_on(DISP_MODULE_DSIDUAL, NULL);
+	ret = lcm_resume_sequence(true);
+	if (ret) {
+		LCM_LOGI("%s failed: %d\n", __func__, ret);
+		lcm_force_power_off(false);
+		return 0;
+	}
+
+	return 1;
+}
+
 LCM_DRIVER nt35523_wqxga_dsi_vdo_sharp_lcm_drv = {
 	.name           = "nt35523_wqxga_dsi_vdo_sharp",
 	.set_util_funcs = lcm_set_util_funcs,
 	.get_params     = lcm_get_params,
 	.init           = lcm_init,
+	.prepare_suspend = lcm_prepare_suspend,
 	.suspend        = lcm_suspend,
 	.resume         = lcm_resume,
 	.resume_power   = lcm_resume_power,
+	.esd_recover    = lcm_esd_recover,
 	.set_disp_param = lcm_set_disp_param,
 #if (LCM_DSI_CMD_MODE)
 	/*.set_backlight	= lcm_setbacklight,*/
