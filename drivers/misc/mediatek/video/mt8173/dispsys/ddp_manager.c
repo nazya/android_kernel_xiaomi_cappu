@@ -910,13 +910,16 @@ int dpmgr_path_build_cmdq(disp_path_handle dp_handle, void *trigger_loop_handle,
 	handle = (ddp_path_handle) dp_handle;
 	modules = ddp_get_scenario_list(handle->scenario);
 	module_num = ddp_get_module_num(handle->scenario);
-	DISP_LOG_D("path build cmdq on scenario %s\n", ddp_get_scenario_name(handle->scenario));
+	if (ddp_debug_dbg_log_level())
+		pr_info("[DDP/" LOG_TAG "]path build cmdq on scenario %s\n",
+			ddp_get_scenario_name(handle->scenario));
 	for (i = 0; i < module_num; i++) {
 		module_name = modules[i];
 		if (ddp_modules_driver[module_name] != 0) {
 			if (ddp_modules_driver[module_name]->build_cmdq != 0) {
-				DISP_LOG_D("%s build cmdq, state=%d\n",
-					   ddp_get_module_name(module_name), state);
+				if (ddp_debug_dbg_log_level())
+					pr_info("[DDP/" LOG_TAG "]%s build cmdq, state=%d\n",
+						ddp_get_module_name(module_name), state);
 				ret = ddp_modules_driver[module_name]->build_cmdq(module_name,
 					trigger_loop_handle, state);
 			}
