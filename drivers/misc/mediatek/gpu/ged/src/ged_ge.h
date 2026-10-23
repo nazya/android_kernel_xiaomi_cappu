@@ -18,9 +18,15 @@
 
 #include <ged_type.h>
 
+struct file;
+
 int ged_ge_init(void);
 int ged_ge_exit(void);
 int ged_ge_alloc(uint32_t region_num, uint32_t *region_sizes);
+int ged_ge_alloc_prepare(uint32_t region_num, uint32_t *region_sizes,
+		struct file **file);
+void ged_ge_alloc_commit(int ge_fd, struct file *file);
+void ged_ge_alloc_abort(int ge_fd, struct file *file);
 int ged_ge_get(int ge_fd, uint32_t region_id, uint32_t u32_offset,
 		uint32_t u32_size, uint32_t *output_data);
 int ged_ge_set(int ge_fd, uint32_t region_id, uint32_t u32_offset,

@@ -104,6 +104,8 @@ static ssize_t ged_write(struct file *filp, const char __user *buf, size_t count
 static long ged_dispatch(struct file *pFile, GED_BRIDGE_PACKAGE *psBridgePackageKM)
 {
 	int ret = -EFAULT;
+	int pending_ge_fd = -1;
+	struct file *pending_ge_file = NULL;
 	void *pvIn = NULL, *pvOut = NULL;
 	typedef int (ged_bridge_func_type)(void *, void *);
 	ged_bridge_func_type* pFunc = NULL;
@@ -231,6 +233,15 @@ static long ged_dispatch(struct file *pFile, GED_BRIDGE_PACKAGE *psBridgePackage
 				GED_LOGE("GE_ALLOC region count does not fit input buffer\n");
 				goto dispatch_exit;
 			}
+			pending_ge_fd = ged_ge_alloc_prepare(
+					((GED_BRIDGE_IN_GE_ALLOC *)pvIn)->region_num,
+					((GED_BRIDGE_IN_GE_ALLOC *)pvIn)->region_sizes,
+					&pending_ge_file);
+			((GED_BRIDGE_OUT_GE_ALLOC *)pvOut)->ge_fd = pending_ge_fd;
+			((GED_BRIDGE_OUT_GE_ALLOC *)pvOut)->eError =
+					pending_ge_fd >= 0 ? GED_OK : GED_ERROR_OOM;
+			pFunc = NULL;
+			ret = 0;
 			break;
 		case GED_BRIDGE_COMMAND_GE_GET:
 			SET_FUNC_AND_CHECK(ged_bridge_ge_get, GE_GET);
@@ -261,16 +272,28 @@ static long ged_dispatch(struct file *pFile, GED_BRIDGE_PACKAGE *psBridgePackage
 		if (pFunc)
 			ret = pFunc(pvIn, pvOut);
 
-		if (psBridgePackageKM->i32OutBufferSize > 0)
-		{
-			if (0 != ged_copy_to_user(psBridgePackageKM->pvParamOut, pvOut, psBridgePackageKM->i32OutBufferSize))
-			{
+		if (psBridgePackageKM->i32OutBufferSize > 0) {
+			if (0 != ged_copy_to_user(psBridgePackageKM->pvParamOut, pvOut,
+					psBridgePackageKM->i32OutBufferSize)) {
+				ret = -EFAULT;
 				goto dispatch_exit;
 			}
+		}
+
+		/*
+		 * Match pipe2: expose a newly allocated descriptor only after its
+		 * number has been copied successfully to userspace. Otherwise an
+		 * unreportable descriptor would remain installed in this process.
+		 */
+		if (pending_ge_file) {
+			ged_ge_alloc_commit(pending_ge_fd, pending_ge_file);
+			pending_ge_file = NULL;
 		}
 	}
 
 dispatch_exit:
+	if (pending_ge_file)
+		ged_ge_alloc_abort(pending_ge_fd, pending_ge_file);
 	kfree(pvIn);
 	kfree(pvOut);
 
