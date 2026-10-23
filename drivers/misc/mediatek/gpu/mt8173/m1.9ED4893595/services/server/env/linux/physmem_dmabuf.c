@@ -837,6 +837,7 @@ PhysmemImportSparseDmaBuf(CONNECTION_DATA *psConnection,
 	struct dma_buf_attachment *psAttachment;
 	struct dma_buf *psDmaBuf;
 	PVRSRV_ERROR eError;
+	IMG_UINT32 aui32NonSparseMapping[1] = { 0 };
 
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 
@@ -953,7 +954,7 @@ PhysmemImportSparseDmaBuf(CONNECTION_DATA *psConnection,
 		uiChunkSize = psDmaBuf->size;
 		ui32NumPhysChunks = 1;
 		ui32NumVirtChunks = 1;
-		pui32MappingTable[0] = 0;
+		pui32MappingTable = aui32NonSparseMapping;
 	}
 
 
