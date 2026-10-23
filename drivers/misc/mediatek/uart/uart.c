@@ -1987,6 +1987,9 @@ static void mtk_uart_start_tx(struct uart_port *port)
 #endif
 		if (uart->write_allow(uart))
 			mtk_uart_tx_chars(uart);
+		else
+			/* Resume from the TX-empty interrupt once the FIFO drains */
+			mtk_uart_enable_intrs(uart, UART_IER_ETBEI);
 	}
 }
 
