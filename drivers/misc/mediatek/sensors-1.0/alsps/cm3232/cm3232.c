@@ -325,13 +325,14 @@ READ_ALS_EXIT_ERR:
 /********************************************************************/
 static int cm3232_get_als_value(struct cm3232_priv *obj, u16 als)
 {
-	int value = 0;
+	s64 value;
 
 	/*when IT = 100ms, HS =2, 0.032Lux/bit is used to calculate Lux*/
 	if (atomic_read(&obj->trace) & CMC_TRC_DEBUG)
 		APS_LOG("cm3232_get_als_value: obj->als_cali: %d, als: %d\n", obj->als_cali, als);
-	value = GLASS_FACTOR * als * 32 * obj->als_cali/1000;
-	return value;
+	/* Keep the fixed-point result exact across the full 16-bit ADC range. */
+	value = (s64)GLASS_FACTOR * als * 32 * obj->als_cali;
+	return value / 1000;
 }
 
 /*-------------------------------attribute file for debugging----------------------------------*/
