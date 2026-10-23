@@ -402,6 +402,7 @@ int ovl2mem_output_config(ovl2mem_out_config *out)
 	/* all dirty should be cleared in dpmgr_path_get_last_config() */
 	if (pgc->dpmgr_handle == NULL) {
 		DISPMSG("ovl2mem_output_config dpmgr_handle NULL\n");
+		_ovl2mem_path_unlock(__func__);
 		return 0;
 	}
 	data_config = dpmgr_path_get_last_config(pgc->dpmgr_handle);
