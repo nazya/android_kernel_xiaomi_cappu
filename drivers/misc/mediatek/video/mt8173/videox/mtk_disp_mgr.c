@@ -1914,14 +1914,9 @@ int _ioctl_wait_vsync(unsigned long arg)
 
 int _ioctl_get_display_caps(unsigned long arg)
 {
-	int ret = 0;
-	disp_caps_info caps_info;
+	disp_caps_info caps_info = { 0 };
 	void __user *argp = (void __user *)arg;
 
-	if (copy_from_user(&caps_info, argp, sizeof(caps_info))) {
-		DISPMSG("[FB]: copy_to_user failed! line:%d\n", __LINE__);
-		ret = -EFAULT;
-	}
 #ifdef DISP_HW_MODE_CAP
 	caps_info.output_mode = DISP_HW_MODE_CAP;
 #else
@@ -1953,10 +1948,10 @@ int _ioctl_get_display_caps(unsigned long arg)
 
 	if (copy_to_user(argp, &caps_info, sizeof(caps_info))) {
 		DISPMSG("[FB]: copy_to_user failed! line:%d\n", __LINE__);
-		ret = -EFAULT;
+		return -EFAULT;
 	}
 
-	return ret;
+	return 0;
 }
 
 int _ioctl_set_vsync(unsigned long arg)
