@@ -43,6 +43,7 @@ typedef struct {
 	ion_mm_buf_debug_info_t dbg_info;
 	ion_mm_sf_buf_info_t sf_buf_info;
 	ion_mm_buf_destroy_callback_t *destroy_fn;
+	struct mutex lock;	/* MVA allocation and configuration, as in ion_fb_buffer_info */
 } ion_mm_buffer_info;
 
 #define ION_FUNC_ENTER  /* MMProfileLogMetaString(MMP_ION_DEBUG, MMProfileFlagStart, __func__); */
@@ -248,6 +249,7 @@ static int ion_mm_heap_allocate(struct ion_heap *heap,
 	}
 
 	buffer->sg_table = table;
+	mutex_init(&pBufferInfo->lock);
 	pBufferInfo->pVA = 0;
 	pBufferInfo->MVA = 0;
 	pBufferInfo->eModuleID = -1;
@@ -363,7 +365,10 @@ static int ion_mm_heap_phys(struct ion_heap *heap, struct ion_buffer *buffer,
 		IONMSG("[ion_mm_heap_phys]: Error. Invalid buffer.\n");
 		return -EFAULT; /* Invalid buffer */
 	}
+	/* As in ion_fb_heap_phys(): two callers must not both allocate an MVA */
+	mutex_lock(&pBufferInfo->lock);
 	if (pBufferInfo->eModuleID == -1) {
+		mutex_unlock(&pBufferInfo->lock);
 		IONMSG("[ion_mm_heap_phys]: Error. Buffer not configured.\n");
 		return -EFAULT; /* Buffer not configured. */
 	}
@@ -376,12 +381,14 @@ static int ion_mm_heap_phys(struct ion_heap *heap, struct ion_buffer *buffer,
 
 		if (ret < 0) {
 			pBufferInfo->MVA = 0;
+			mutex_unlock(&pBufferInfo->lock);
 			IONMSG("[ion_mm_heap_phys]: Error. Allocate MVA failed.\n");
 			return -EFAULT;
 		}
 	}
 	*(unsigned int *) addr = pBufferInfo->MVA; /* MVA address */
 	*len = buffer->size;
+	mutex_unlock(&pBufferInfo->lock);
 
 	return 0;
 }
@@ -795,6 +802,11 @@ long ion_mm_ioctl(struct ion_client *client, unsigned int cmd, unsigned long arg
 			if ((int) buffer->heap->type == ION_HEAP_TYPE_MULTIMEDIA) {
 				ion_mm_buffer_info *pBufferInfo = buffer->priv_virt;
 
+				/*
+				 * Configure under the lock ion_mm_heap_phys() allocates the
+				 * MVA with; MediaTek's later ion_mm_heap.c does not lock here.
+				 */
+				mutex_lock(&pBufferInfo->lock);
 				buffer_sec = pBufferInfo->security;
 				if (pBufferInfo->MVA == 0) {
 					pBufferInfo->eModuleID = Param.config_buffer_param.eModuleID;
@@ -815,9 +827,12 @@ long ion_mm_ioctl(struct ion_client *client, unsigned int cmd, unsigned long arg
 						ret = -ION_ERROR_CONFIG_LOCKED;
 					}
 				}
+				mutex_unlock(&pBufferInfo->lock);
 			} else if ((int) buffer->heap->type == ION_HEAP_TYPE_FB) {
 				ion_fb_buffer_info *pBufferInfo = buffer->priv_virt;
 
+				/* Likewise with the lock ion_fb_heap_phys() already takes */
+				mutex_lock(&pBufferInfo->lock);
 				buffer_sec = pBufferInfo->security;
 				if (pBufferInfo->MVA == 0) {
 					pBufferInfo->eModuleID = Param.config_buffer_param.eModuleID;
@@ -838,6 +853,7 @@ long ion_mm_ioctl(struct ion_client *client, unsigned int cmd, unsigned long arg
 						ret = -ION_ERROR_CONFIG_LOCKED;
 					}
 				}
+				mutex_unlock(&pBufferInfo->lock);
 
 			} else if ((int) buffer->heap->type == ION_HEAP_TYPE_MULTIMEDIA_SEC) {
 				ion_sec_buffer_info *pBufferInfo = buffer->priv_virt;
