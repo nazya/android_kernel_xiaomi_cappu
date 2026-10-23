@@ -29,6 +29,12 @@
 
 static DEFINE_PER_CPU(struct od_cpu_dbs_info_s, od_cpu_dbs_info);
 
+/*
+ * Tunables of each policy, indexed by its first CPU.  They are never freed,
+ * so they survive the policy's CPUs going offline.
+ */
+static DEFINE_PER_CPU(struct od_dbs_tuners *, od_cached_tuners);
+
 static struct od_ops od_ops;
 
 #ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND
@@ -475,24 +481,17 @@ static struct attribute_group od_attr_group_gov_pol = {
 
 /************************** sysfs end ************************/
 
-static int od_init(struct dbs_data *dbs_data)
+static int od_init(struct dbs_data *dbs_data, struct cpufreq_policy *policy)
 {
+	struct od_dbs_tuners **cached_tuners;
 	struct od_dbs_tuners *tuners;
 	u64 idle_time;
 	int cpu;
-
-	tuners = kzalloc(sizeof(*tuners), GFP_KERNEL);
-	if (!tuners) {
-		pr_err("%s: kzalloc failed\n", __func__);
-		return -ENOMEM;
-	}
 
 	cpu = get_cpu();
 	idle_time = get_cpu_idle_time_us(cpu, NULL);
 	put_cpu();
 	if (idle_time != -1ULL) {
-		/* Idle micro accounting is supported. Use finer thresholds */
-		tuners->up_threshold = MICRO_FREQUENCY_UP_THRESHOLD;
 		/*
 		 * In nohz/micro accounting case we set the minimum frequency
 		 * not depending on HZ, but fixed (very low). The deferred
@@ -500,17 +499,33 @@ static int od_init(struct dbs_data *dbs_data)
 		*/
 		dbs_data->min_sampling_rate = MICRO_FREQUENCY_MIN_SAMPLE_RATE;
 	} else {
-		tuners->up_threshold = DEF_FREQUENCY_UP_THRESHOLD;
-
 		/* For correct statistics, we need 10 ticks for each measure */
 		dbs_data->min_sampling_rate = MIN_SAMPLING_RATE_RATIO *
 			jiffies_to_usecs(10);
 	}
 
-	tuners->sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR;
-	tuners->ignore_nice_load = 0;
-	tuners->powersave_bias = default_powersave_bias;
-	tuners->io_is_busy = should_io_be_busy();
+	cached_tuners = &per_cpu(od_cached_tuners,
+				 cpumask_first(policy->related_cpus));
+	tuners = *cached_tuners;
+	if (!tuners) {
+		tuners = kzalloc(sizeof(*tuners), GFP_KERNEL);
+		if (!tuners) {
+			pr_err("%s: kzalloc failed\n", __func__);
+			return -ENOMEM;
+		}
+
+		/* Idle micro accounting is supported. Use finer thresholds */
+		if (idle_time != -1ULL)
+			tuners->up_threshold = MICRO_FREQUENCY_UP_THRESHOLD;
+		else
+			tuners->up_threshold = DEF_FREQUENCY_UP_THRESHOLD;
+
+		tuners->sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR;
+		tuners->ignore_nice_load = 0;
+		tuners->powersave_bias = default_powersave_bias;
+		tuners->io_is_busy = should_io_be_busy();
+		*cached_tuners = tuners;
+	}
 
 	dbs_data->tuners = tuners;
 	mutex_init(&dbs_data->mutex);
@@ -519,7 +534,7 @@ static int od_init(struct dbs_data *dbs_data)
 
 static void od_exit(struct dbs_data *dbs_data)
 {
-	kfree(dbs_data->tuners);
+	/* The tunables stay in od_cached_tuners for the next od_init() */
 }
 
 define_get_cpu_dbs_routines(od_cpu_dbs_info);

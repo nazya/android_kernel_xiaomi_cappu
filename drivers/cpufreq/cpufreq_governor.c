@@ -239,6 +239,17 @@ static void set_sampling_rate(struct dbs_data *dbs_data,
 	}
 }
 
+static unsigned int get_sampling_rate(struct dbs_data *dbs_data)
+{
+	if (dbs_data->cdata->governor == GOV_CONSERVATIVE) {
+		struct cs_dbs_tuners *cs_tuners = dbs_data->tuners;
+		return cs_tuners->sampling_rate;
+	} else {
+		struct od_dbs_tuners *od_tuners = dbs_data->tuners;
+		return od_tuners->sampling_rate;
+	}
+}
+
 int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		struct common_dbs_data *cdata, unsigned int event)
 {
@@ -278,7 +289,7 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 
 		dbs_data->cdata = cdata;
 		dbs_data->usage_count = 1;
-		rc = cdata->init(dbs_data);
+		rc = cdata->init(dbs_data, policy);
 		if (rc) {
 			pr_err("%s: POLICY_INIT: init() failed\n", __func__);
 			kfree(dbs_data);
@@ -306,8 +317,12 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		/* Bring kernel and HW constraints together */
 		dbs_data->min_sampling_rate = max(dbs_data->min_sampling_rate,
 				MIN_LATENCY_MULTIPLIER * latency);
+		/* Keep the sampling rate of tunables that init() kept */
+		sampling_rate = get_sampling_rate(dbs_data);
+		if (!sampling_rate)
+			sampling_rate = latency * LATENCY_MULTIPLIER;
 		set_sampling_rate(dbs_data, max(dbs_data->min_sampling_rate,
-					latency * LATENCY_MULTIPLIER));
+					sampling_rate));
 
 		if ((cdata->governor == GOV_CONSERVATIVE) &&
 				(!policy->governor->initialized)) {
