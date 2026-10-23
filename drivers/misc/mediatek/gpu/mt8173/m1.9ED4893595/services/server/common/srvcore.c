@@ -974,6 +974,7 @@ PVRSRV_ERROR BridgedDispatchKM(CONNECTION_DATA * psConnection,
 #endif
 #if !defined(INTEGRITY_OS)
 	PVRSRV_DATA *psPVRSRVData = PVRSRVGetPVRSRVData();
+	IMG_BOOL bBridgeBufferPoolAcquired = IMG_FALSE;
 #endif
 
 #if defined(DEBUG_BRIDGE_KM_STOP_AT_DISPATCH)
@@ -1078,6 +1079,7 @@ PVRSRV_ERROR BridgedDispatchKM(CONNECTION_DATA * psConnection,
 			PVR_DPF((PVR_DBG_ERROR, "Failed to get bridge buffer from global pool"));
 			goto unlock_and_return_error;
 		}
+		bBridgeBufferPoolAcquired = IMG_TRUE;
 
 		psBridgeOut = ((IMG_BYTE *) psBridgeIn) + PVRSRV_MAX_BRIDGE_IN_SIZE;
 #endif
@@ -1222,12 +1224,19 @@ unlock_and_return_error:
 #endif
 
 #if !defined(INTEGRITY_OS)
-		err = PVRSRVPoolPut(psPVRSRVData->psBridgeBufferPool,
-								hBridgeBufferPoolToken);
-
-		if(err != PVRSRV_OK)
+		if(bBridgeBufferPoolAcquired)
 		{
-			PVR_DPF((PVR_DBG_ERROR, "Failed to return bridge buffer to global pool"));
+			PVRSRV_ERROR ePutError;
+
+			ePutError = PVRSRVPoolPut(psPVRSRVData->psBridgeBufferPool,
+							      hBridgeBufferPoolToken);
+			if(ePutError != PVRSRV_OK)
+			{
+				PVR_DPF((PVR_DBG_ERROR,
+					 "Failed to return bridge buffer to global pool"));
+				if(err == PVRSRV_OK)
+					err = ePutError;
+			}
 		}
 #endif
 	}

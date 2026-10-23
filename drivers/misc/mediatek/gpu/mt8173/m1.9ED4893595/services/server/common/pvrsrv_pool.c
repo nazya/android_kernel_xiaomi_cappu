@@ -120,6 +120,7 @@ err_alloc:
 	return eError;
 }
 
+
 static PVRSRV_ERROR _DestroyPoolEntry(PVRSRV_POOL *psPool,
 					PVRSRV_POOL_ENTRY *psEntry)
 {
@@ -220,8 +221,6 @@ PVRSRV_ERROR PVRSRVPoolGet(PVRSRV_POOL *psPool,
 	}
 	else
 	{
-		PVRSRV_ERROR eError;
-
 		/* no available elements in the pool. try to create one */
 
 		eError = _CreateNewPoolEntry(psPool, &psEntry);
@@ -271,4 +270,3 @@ PVRSRV_ERROR PVRSRVPoolPut(PVRSRV_POOL *psPool, PVRSRV_POOL_TOKEN hToken)
 
 	return eError;
 }
-
