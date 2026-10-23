@@ -1167,76 +1167,76 @@ static void pvr_sync_foreign_sync_pt_signaled(struct sync_fence *fence,
 
 	//pr_err("pvr_sync2: %s:   signalling sync checkpoint <%p> \n",__func__, (void*)waiter->kernel->fence_sync->client_sync_checkpoint);
 
-	/* Complete the SW operation and free the sync if we can. If we can't,
-	 * it will be checked by a later workqueue kick.
+	/* Recovery may have errored this checkpoint before the one-shot foreign
+	 * callback arrives.  Signal only an unmet checkpoint, but always release
+	 * the callback-owned waiter, checkpoint owner and fence reference.
 	 */
-	if (!is_sync_checkpoint_met(waiter->kernel->fence_sync)) {
+	if (!is_sync_checkpoint_met(waiter->kernel->fence_sync))
 		complete_sync_checkpoint(waiter->kernel->fence_sync);
 
-		MTKPP_LOG(MTKPP_ID_SYNC, "[%p] sigl tid:%d", fence, MTKGetCurrentProcessIDKM());
+	MTKPP_LOG(MTKPP_ID_SYNC, "[%p] sigl tid:%d", fence,
+		  MTKGetCurrentProcessIDKM());
 
-		/* We can 'put' the fence now, but this function might be called in
-		 * irq context so we must defer to WQ.
-		 * This WQ is triggered in pvr_sync_defer_free, so adding it to the
-		 * put list before that should guarantee it's cleaned up on the next
-		 * wq run.
-		 */
-		spin_lock_irqsave(&sync_fence_put_list_spinlock, flags);
-		list_add_tail(&waiter->sync_fence->list, &sync_fence_put_list);
-		spin_unlock_irqrestore(&sync_fence_put_list_spinlock, flags);
+	/* fput may sleep, so hand the callback-owned fence reference to WQ. */
+	spin_lock_irqsave(&sync_fence_put_list_spinlock, flags);
+	list_add_tail(&waiter->sync_fence->list, &sync_fence_put_list);
+	spin_unlock_irqrestore(&sync_fence_put_list_spinlock, flags);
 
-		pvr_sync_defer_free_checkpoints(waiter->kernel);
+	pvr_sync_defer_free_checkpoints(waiter->kernel);
 
-		/* The completed sw-sync may allow other tasks to complete,
-		 * so we need to allow them to progress.
-		 */
-		queue_work(pvr_sync_data.check_status_wq,
-			&pvr_sync_data.check_status_work);
+	/* The completed or errored checkpoint may let other work progress. */
+	queue_work(pvr_sync_data.check_status_wq,
+		&pvr_sync_data.check_status_work);
 
-		kfree(waiter);
-	}
-	else {
-		pr_err("pvr_sync2: %s:   this sync checkpoint has already been signalled - why are we asked to do this more than once?! \n",__func__);
-	}
+	kfree(waiter);
 }
 
-static PSYNC_CHECKPOINT
-pvr_sync_create_waiter_for_foreign_sync(int fd, PSYNC_CHECKPOINT_CONTEXT psSyncCheckpointContext)
+static enum PVRSRV_ERROR
+pvr_sync_create_waiter_for_foreign_sync(struct sync_fence *fence,
+					PSYNC_CHECKPOINT *checkpoint_out)
 {
 	struct pvr_sync_kernel_pair *kernel = NULL;
 	struct pvr_sync_fence_waiter *waiter;
-	struct pvr_sync_fence *sync_fence;
-	PSYNC_CHECKPOINT checkpoint;
-	struct sync_fence *fence;
-	enum PVRSRV_ERROR error;
+	struct pvr_sync_fence *sync_fence = NULL;
+	PSYNC_CHECKPOINT checkpoint = NULL;
+	enum PVRSRV_ERROR error = PVRSRV_OK;
 	int err;
 
-	fence = sync_fence_fdget(fd);
-	if (!fence) {
-		pr_err("pvr_sync2: %s: Failed to take reference on fence\n",
-		       __func__);
-		goto err_out;
+	if (!fence || !checkpoint_out) {
+		return PVRSRV_ERROR_INVALID_PARAMS;
 	}
+	*checkpoint_out = NULL;
 
-	kernel = kmalloc(sizeof(*kernel), GFP_KERNEL);
+	/*
+	 * The resolver already pinned this exact fence.  Take a separate file
+	 * reference for the asynchronous waiter instead of looking the numeric
+	 * fd up again after it could have been closed and reused.
+	 */
+	get_file(fence->file);
+
+	kernel = kzalloc(sizeof(*kernel), GFP_KERNEL);
 	if (!kernel) {
 		pr_err("pvr_sync2: %s: Failed to allocate sync kernel\n",
 		       __func__);
+		error = PVRSRV_ERROR_OUT_OF_MEMORY;
 		goto err_put_fence;
 	}
 
-	sync_fence = kmalloc(sizeof(*sync_fence), GFP_KERNEL);
+	sync_fence = kzalloc(sizeof(*sync_fence), GFP_KERNEL);
 	if (!sync_fence) {
 		pr_err("pvr_sync2: %s: Failed to allocate pvr sync fence\n",
 		       __func__);
+		error = PVRSRV_ERROR_OUT_OF_MEMORY;
 		goto err_free_kernel;
 	}
 
 	sync_fence->fence = fence;
 
 	kernel->fence_sync = kzalloc(sizeof(struct pvr_sync_native_sync_checkpoint), GFP_KERNEL);
-	if (!kernel->fence_sync)
+	if (!kernel->fence_sync) {
+		error = PVRSRV_ERROR_OUT_OF_MEMORY;
 		goto err_free_fence;
+	}
 
 	/* Create sync checkpoint for the foreign sync, with an invalid timeline (as we do not know it) */
 	//pr_err("pvr_sync2: %s:   Allocating-sync checkpoint for foreign sync (fence->name = %s)...\n",__func__, fence->name);
@@ -1280,6 +1280,7 @@ pvr_sync_create_waiter_for_foreign_sync(int fd, PSYNC_CHECKPOINT_CONTEXT psSyncC
 	waiter = kmalloc(sizeof(*waiter), GFP_KERNEL);
 	if (!waiter) {
 		pr_err("pvr_sync2: %s: Failed to allocate waiter\n", __func__);
+		error = PVRSRV_ERROR_OUT_OF_MEMORY;
 		goto err_free_cleanup_sync;
 	}
 
@@ -1307,20 +1308,20 @@ pvr_sync_create_waiter_for_foreign_sync(int fd, PSYNC_CHECKPOINT_CONTEXT psSyncC
 			MTKPP_LOG(MTKPP_ID_SYNC, "[%p] erro tid:%d err %d", fence, MTKGetCurrentProcessIDKM(), err);
 			pr_err("pvr_sync2: %s: Fence was in error state (%d)\n",
 			       __func__, err);
-			/* Fall-thru */
+			error = PVRSRV_ERROR_FAILED_DEPENDENCIES;
 		} else
 			MTKPP_LOG(MTKPP_ID_SYNC, "[%p] sigled tid:%d", fence, MTKGetCurrentProcessIDKM());
 
-		/* -1 means the fence was broken, 1 means the fence already
-		 * signalled. In either case, roll back what we've done and
-		 * skip using this sync_pt for synchronization.
+		/* A signalled fence needs no checkpoint.  A broken fence is an
+		 * explicit resolve failure; do not silently drop its dependency.
 		 */
 		goto err_put_checkpoint_ref;
 	}
 
-	//pr_err("pvr_sync2: %s: ...done (ok)\n",__func__);
+	/* The callback now owns waiter, kernel, sync_fence and the fence ref. */
+	*checkpoint_out = checkpoint;
 err_out:
-	return checkpoint;
+	return error;
 err_put_checkpoint_ref:
 	SyncCheckpointDropRef(checkpoint);
 	kfree(waiter);
@@ -1342,7 +1343,6 @@ err_free_kernel:
 	kernel = NULL;
 err_put_fence:
 	sync_fence_put(fence);
-	//pr_err("pvr_sync2: %s: ...done (error)\n",__func__);
 	goto err_out;
 }
 
@@ -1668,16 +1668,11 @@ enum PVRSRV_ERROR pvr_sync_create_fence (const char *fence_name, PVRSRV_TIMELINE
 	//pr_err("pvr_sync2: %s: getting timeline private data\n",__func__);
 	timeline = get_timeline(timeline_file->private_data);
 
-	/* We know this will not free the timeline as the user still
-	 * has the fd referencing it.
-	 */
-	fput(timeline_file);
-
 	if (!timeline) {
 		pr_err("pvr_sync2: %s: Supplied timeline has no private data\n",
 			__func__);
 		err = PVRSRV_ERROR_HANDLE_NOT_FOUND;
-		goto err_put_fd;
+		goto err_put_timeline;
 	}
 
 	/* Check if this timeline already has a sync prim, if not create it now */
@@ -1690,7 +1685,7 @@ enum PVRSRV_ERROR pvr_sync_create_fence (const char *fence_name, PVRSRV_TIMELINE
 			pr_err("pvr_sync2: %s: Failed to allocate timeline sync prim (%s)\n",
 							__func__, PVRSRVGetErrorStringKM(err));
 			err = PVRSRV_ERROR_OUT_OF_MEMORY;
-			goto err_put_fd;
+			goto err_put_timeline;
 		}
 	}
 
@@ -1700,7 +1695,7 @@ enum PVRSRV_ERROR pvr_sync_create_fence (const char *fence_name, PVRSRV_TIMELINE
 		pr_err("pvr_sync2: %s: Failed to create sync point\n",
 			__func__);
 		err = PVRSRV_ERROR_OUT_OF_MEMORY;
-		goto err_put_fd;
+		goto err_put_timeline;
 	}
 
 	//pr_err("pvr_sync2: %s: creating native_fence containing the new native_sync_point\n",__func__);
@@ -1724,8 +1719,8 @@ enum PVRSRV_ERROR pvr_sync_create_fence (const char *fence_name, PVRSRV_TIMELINE
 		timeline_prim->next_value--;
 		/* Error the new fence's sync checkpoint (so the deferred free considers it 'met') */
 		error_sync_checkpoint(native_sync_point->sync_data->kernel->fence_sync);
-		pvr_sync_free_sync(&native_sync_point->pt);
-		goto err_put_fd;
+		sync_pt_free(&native_sync_point->pt);
+		goto err_put_timeline;
 	}
 
 	//pr_err("pvr_sync2: %s: native_fence=<%p>\n",__func__, (void*)native_fence);
@@ -1759,6 +1754,8 @@ enum PVRSRV_ERROR pvr_sync_create_fence (const char *fence_name, PVRSRV_TIMELINE
 
 	*fence_uid = new_fence_fd; /* TODO FDs are not unique! */
 
+	/* Keep the file pin through every access to the private timeline. */
+	fput(timeline_file);
 	goto err_out;
 
 err_put_timeline:
@@ -1822,12 +1819,12 @@ enum PVRSRV_ERROR pvr_sync_resolve_fence(PSYNC_CHECKPOINT_CONTEXT psSyncCheckpoi
 		err =  PVRSRV_ERROR_INVALID_PARAMS;
 		goto err_out;
 	}
+	*nr_checkpoints = 0;
+	*checkpoint_handles = NULL;
+	(void)psSyncCheckpointContext;
 
 	if (fence_to_resolve < 0) {
 		//pr_err("pvr_sync2: %s: null fence passed(%d), returning 0 checkpoints\n",__func__, fence_to_resolve);
-		/* Null fence passed, so return 0 checkpoints */
-		*nr_checkpoints = 0;
-		*checkpoint_handles = NULL;
 		*fence_uid = 0;
 	}
 	else
@@ -1836,8 +1833,9 @@ enum PVRSRV_ERROR pvr_sync_resolve_fence(PSYNC_CHECKPOINT_CONTEXT psSyncCheckpoi
 		struct sync_pt *sync_pt;
 		struct pvr_sync_kernel_pair *sync_kernel;
 		u32 points_on_fence = 0;
+		bool has_foreign_point = false;
 		PSYNC_CHECKPOINT foreign_checkpoint = NULL;
-		PSYNC_CHECKPOINT *next_checkpoint;
+		PSYNC_CHECKPOINT *checkpoints = NULL;
 		int j;
 
 		//pr_err("pvr_sync: %s: resolving fence (sync_fence=<%p>)...\n",__func__, (void*)sync_fence);
@@ -1848,105 +1846,71 @@ enum PVRSRV_ERROR pvr_sync_resolve_fence(PSYNC_CHECKPOINT_CONTEXT psSyncCheckpoi
 			goto err_out;
 		}
 
-		/* Alloc memory to hold list of PSYNC_CHECKPOINTs */
-		/* (Alloc memory for 32 sync checkpoint handles) */
-		//pr_err("pvr_sync2: %s: allocating memory for 32 PSYNC_CHECKPOINTs...\n",__func__);
-		*checkpoint_handles = (PSYNC_CHECKPOINT*)kmalloc((sizeof(PSYNC_CHECKPOINT) * 32), GFP_KERNEL);
-		if (!(*checkpoint_handles)) {
+		/*
+		 * num_fences is immutable while the pinned sync_fence exists and is
+		 * an exact upper bound: every PVR point contributes at most one
+		 * checkpoint and all foreign points share one shadow checkpoint.
+		 */
+		if (sync_fence->num_fences == 0) {
+			*fence_uid = fence_to_resolve;
+			goto err_out2;
+		}
+		checkpoints = kmalloc_array(sync_fence->num_fences,
+					    sizeof(*checkpoints), GFP_KERNEL);
+		if (!checkpoints) {
 			pr_err("pvr_sync2: %s: Failed to alloc memory for returned list of sync checkpoints\n",
 				__func__);
 			err = PVRSRV_ERROR_OUT_OF_MEMORY;
 			goto err_out2;
 		}
-		//pr_err("pvr_sync2: %s: ...done <%p>\n",__func__, *checkpoint_handles);
-
-		next_checkpoint = (PSYNC_CHECKPOINT*)*checkpoint_handles;
 
 		(void)j;
 		for_each_sync_pt(sync_pt, sync_fence, j) {
 			struct pvr_sync_pt *pvr_pt = NULL;
-			bool is_foreign_sync_pt = false;
-			bool add_foreign_sync = false;
 
 			//pr_err("pvr_sync2: %s:  parsing sync_pt<%p>\n",__func__, (void*)sync_pt);
 			if (!is_pvr_timeline_pt(sync_pt)) {
-				//pr_err("pvr_sync2: %s:   sync_pt=<%p> is not from a pvr timeline\n",__func__, (void*)sync_pt);
-				is_foreign_sync_pt = true;
-				//pr_err("pvr_sync2: %s:   sync_pt=<%p> is foreign - creating waiter...\n",__func__, (void*)sync_pt);
-				foreign_checkpoint = pvr_sync_create_waiter_for_foreign_sync(fence_to_resolve, psSyncCheckpointContext);
-				add_foreign_sync = true;
-				//pr_err("pvr_sync2: %s:   ...done, foreign_sync_kernel=<%p>\n",__func__, (void*)foreign_sync_kernel);
+				if (!sync_pt_get_status(sync_pt))
+					has_foreign_point = true;
+				continue;
 			}
 
-			//pr_err("pvr_sync2: %s: @ Line %d\n",__func__, __LINE__);
-			if (!is_foreign_sync_pt) {
-				pvr_pt = (struct pvr_sync_pt *)sync_pt;
-				//pr_err("pvr_sync2: %s:   pvr_pt=<%p>\n",__func__, (void*)pvr_pt);
-				//pr_err("pvr_sync2: %s:   pvr_pt->sync_data=<%p>\n",__func__, (void*)pvr_pt->sync_data);
-				//pr_err("pvr_sync2: %s:   pvr_pt->sync_data->kernel=<%p>\n",__func__, (void*)pvr_pt->sync_data->kernel);
-				sync_kernel = pvr_pt->sync_data->kernel;
-
-				//pr_err("pvr_sync2: %s: calling is_sync_checkpoint_met\n",__func__);
-				if (!sync_kernel ||
-					is_sync_checkpoint_met(sync_kernel->fence_sync)) {
-					//pr_err("pvr_sync2: %s: sync_pt (skipped as no checkpoint or checkpoint is already met)...\n",__func__);
-					continue;
-				}
-
-				//pr_err("pvr_sync2: %s: @ Line %d\n",__func__, __LINE__);
-
-				//pr_err("pvr_sync2: %s: ...next_checkpoint = <%p>\n",__func__, (void*)next_checkpoint);
-
-				/* Take ref on sync_checkpoint - this will be dropped by the caller
-				 * (Kick code) once it has incremented the checkpoint's CCB enqueued count.
-				 * We only really need to do this for foreign sync checkpoints, to prevent
-				 * the sync_checkpoint from being destroyed if it gets signalled while being
-				 * processed by the Kick code, but the Kick code has no knowledge of whether a
-				 * sync_checkpoint is foreign, so we take a ref on all checkpoints.
-				 */
-				SyncCheckpointTakeRef(sync_kernel->fence_sync->client_sync_checkpoint);
-
-				*next_checkpoint = sync_kernel->fence_sync->client_sync_checkpoint;
-				next_checkpoint++;
-				points_on_fence++;
-				//pr_err("pvr_sync2: %s: fence contains sync checkpoint<%p>\n",__func__, (void*)sync_kernel->fence_sync->client_sync_checkpoint);
-				//pr_err("pvr_sync2: %s: increment points_on_fence (now %d)\n",__func__, points_on_fence);
+			pvr_pt = (struct pvr_sync_pt *)sync_pt;
+			sync_kernel = pvr_pt->sync_data->kernel;
+			if (!sync_kernel ||
+				is_sync_checkpoint_met(sync_kernel->fence_sync)) {
+				continue;
 			}
-			else {
-				//pr_err("pvr_sync2: %s: skipping rest of loop as a foreign sync pt\n",__func__);
-				if (foreign_checkpoint && add_foreign_sync) {
-					//pr_err("pvr_sync2: %s: ...next_checkpoint (fs) = <%p>\n",__func__, (void*)foreign_sync_kernel->fence_sync->client_sync_checkpoint);//next_checkpoint);
-					/* Take ref on sync_checkpoint - this will be dropped by the caller
-					 * (see comment for the other call to SyncCheckpointTakeRef, above).
-					 */
-					/* For foreign points, an extra
-					 * checkpoint reference was taken at
-					 * creation time to ensure it wasn't
-					 * completed and free'd before we got
-					 * here, so ownership of that reference
-					 * is effectively passed to the firmware
-					 */
-					*next_checkpoint = foreign_checkpoint;
-					next_checkpoint++;
-					points_on_fence++;
-				}
-			}
+
+			/* The kick drops this reference after enqueue accounting. */
+			SyncCheckpointTakeRef(
+				sync_kernel->fence_sync->client_sync_checkpoint);
+			checkpoints[points_on_fence++] =
+				sync_kernel->fence_sync->client_sync_checkpoint;
 		}
 
-		if (0)
-		{
-			int ii;
+		if (has_foreign_point) {
+			err = pvr_sync_create_waiter_for_foreign_sync(sync_fence,
+							       &foreign_checkpoint);
+			if (err != PVRSRV_OK)
+				goto err_drop_checkpoints;
+			if (foreign_checkpoint)
+				checkpoints[points_on_fence++] = foreign_checkpoint;
+		}
 
-			pr_err("pvr_sync2: %s: returning nr_checkpoints=%d\n",__func__, points_on_fence);
-			for (ii=0; ii<points_on_fence; ii++)
-			{
-				PSYNC_CHECKPOINT *psTmp = *(checkpoint_handles + ii);
-				pr_err("pvr_sync2: %s:   pt %d: sync checkpoint <%p>,\n",__func__, ii, (void*)psTmp);
-				pr_err("pvr_sync2: %s:          ID=%d\n",__func__, SyncCheckpointGetId(*psTmp));
-			}
+		if (!points_on_fence) {
+			kfree(checkpoints);
+			checkpoints = NULL;
 		}
 		*nr_checkpoints = points_on_fence;
+		*checkpoint_handles = checkpoints;
 		*fence_uid = fence_to_resolve; /* TODO FDs are not really unique! */
+		goto err_out2;
+
+err_drop_checkpoints:
+		while (points_on_fence)
+			SyncCheckpointDropRef(checkpoints[--points_on_fence]);
+		kfree(checkpoints);
 
 err_out2:
 		sync_fence_put(sync_fence);
