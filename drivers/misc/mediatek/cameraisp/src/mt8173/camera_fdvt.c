@@ -529,6 +529,11 @@ static int MT6573FDVT_SetRegHW(MT6573FDVTRegIO * a_pstCfg)
 
 	pREGIO = (MT6573FDVTRegIO *) a_pstCfg;
 
+	if (pREGIO->u4Count > MT6573FDVT_DBUFFREGCNT) {
+		LOG_DBG("Buffer Size Exceeded!\n");
+		return -EFAULT;
+	}
+
 	if (copy_from_user
 	    ((void *)pMT6573FDVTWRBuff.u4Addr, (void *)pREGIO->pAddr,
 	     pREGIO->u4Count * sizeof(u32))) {
@@ -569,8 +574,9 @@ static int MT6573FDVT_ReadRegHW(MT6573FDVTRegIO *a_pstCfg)
 	int size = a_pstCfg->u4Count * 4;
 	int i;
 
-	if (size > buf_size) {
-		LOG_DBG("size too big\n");
+	if (a_pstCfg->u4Count > MT6573FDVT_DBUFFREGCNT) {
+		LOG_DBG("Buffer Size Exceeded!\n");
+		return -EFAULT;
 	}
 	/*  */
 	if (copy_from_user(pMT6573FDVTRDBuff.u4Addr, a_pstCfg->pAddr, size) != 0) {
@@ -651,6 +657,11 @@ static irqreturn_t MT6573FDVT_irq(int irq, void *dev_id)
 static long FDVT_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	int ret = 0;
+
+	if (_IOC_SIZE(cmd) > buf_size) {
+		LOG_DBG("Buffer Size Exceeded!\n");
+		return -EFAULT;
+	}
 
 	if (_IOC_NONE != _IOC_DIR(cmd)) {
 		/* IO write */
