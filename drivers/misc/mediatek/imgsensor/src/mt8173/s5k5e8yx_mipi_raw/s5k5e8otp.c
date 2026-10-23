@@ -319,6 +319,10 @@ static long CAM_CAL_Ioctl(
 	unsigned long TimeIntervalUS;
 #endif
 
+	/* Both commands pass a request in; for any other pBuff stays unset */
+	if (a_u4Command != CAM_CALIOC_S_WRITE && a_u4Command != CAM_CALIOC_G_READ)
+		return -EPERM;
+
 	if (_IOC_NONE == _IOC_DIR(a_u4Command)) {
 	} else {
 		pBuff = (u8 *)kmalloc(sizeof(stCAM_CAL_INFO_STRUCT), GFP_KERNEL);
@@ -339,6 +343,17 @@ static long CAM_CAL_Ioctl(
 	}
 
 	ptempbuf = (stCAM_CAL_INFO_STRUCT *)pBuff;
+	/*
+	 * iReadData reads 1, 2 or 4 bytes; for any other length it reads
+	 * nothing and the caller would get the kmalloc buffer back as it was.
+	 * A zero length would also leave pu1Params at ZERO_SIZE_PTR, which the
+	 * debug print after the read dereferences. The HAL reads 1 or 4 bytes.
+	 */
+	if (ptempbuf->u4Length != 1 && ptempbuf->u4Length != 2 && ptempbuf->u4Length != 4) {
+		kfree(pBuff);
+		CAM_CALDB("[S24CAM_CAL] ioctl length %u not supported\n", ptempbuf->u4Length);
+		return -EINVAL;
+	}
 	pu1Params = (u8 *)kmalloc(ptempbuf->u4Length, GFP_KERNEL);
 	if (NULL == pu1Params) {
 		kfree(pBuff);
