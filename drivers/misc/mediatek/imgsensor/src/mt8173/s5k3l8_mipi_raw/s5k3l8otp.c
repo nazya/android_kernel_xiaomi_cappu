@@ -46,6 +46,8 @@ static DEFINE_SPINLOCK(g_CAM_CALLock); /* for SMP*/
 #define CAM_CAL_I2C_BUSNUM 3
 
 extern u8 OTPData[];
+/* Size of OTPData[], the LSC table s5k3l8mipiraw_Sensor.c caches */
+#define OTP_DATA_SIZE 1868
 int otp_flag = 0;
 /*******************************************************************************
 *
@@ -313,6 +315,10 @@ static long CAM_CAL_Ioctl(
 	unsigned long TimeIntervalUS;
 #endif
 
+	/* Both commands pass a request in; for any other pBuff stays unset */
+	if (a_u4Command != CAM_CALIOC_S_WRITE && a_u4Command != CAM_CALIOC_G_READ)
+		return -EPERM;
+
 	if (_IOC_NONE == _IOC_DIR(a_u4Command)) {
 	} else {
 		pBuff = (u8 *)kmalloc(sizeof(stCAM_CAL_INFO_STRUCT), GFP_KERNEL);
@@ -332,6 +338,17 @@ static long CAM_CAL_Ioctl(
 	}
 
 	ptempbuf = (stCAM_CAL_INFO_STRUCT *)pBuff;
+	/*
+	 * A read of more than 4 bytes copies OTPData[] from its start, so it
+	 * can be no longer than the table; the HAL asks for 1, 2 or 4 bytes
+	 * and for the whole table. A zero length would leave pu1Params at
+	 * ZERO_SIZE_PTR, which the debug print after the read dereferences.
+	 */
+	if (ptempbuf->u4Length == 0 || ptempbuf->u4Length > OTP_DATA_SIZE) {
+		kfree(pBuff);
+		CAM_CALDB("[S24CAM_CAL] ioctl length %u out of range\n", ptempbuf->u4Length);
+		return -EINVAL;
+	}
 	pu1Params = (u8 *)kmalloc(ptempbuf->u4Length, GFP_KERNEL);
 	if (NULL == pu1Params) {
 		kfree(pBuff);
