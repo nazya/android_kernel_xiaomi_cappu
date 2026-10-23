@@ -536,6 +536,7 @@ PhysmemCreateNewDmaBufBackedPMR(PVRSRV_DEVICE_NODE *psDevNode,
 		eError = PVRSRV_ERROR_INVALID_PARAMS;
 		goto errFreePhysAddr;
 	}
+	psPrivData->psSgTable = table;
 
 	/*
 	 * We do a two pass process: first work out how many pages there
@@ -567,7 +568,6 @@ PhysmemCreateNewDmaBufBackedPMR(PVRSRV_DEVICE_NODE *psDevNode,
 		}
 
 		psPrivData->ui32PhysPageCount = ui32PageCount;
-		psPrivData->psSgTable = table;
 		ui32PageCount = 0;
 		sg = table->sgl;
 		uiSglOffset = 0;
@@ -648,7 +648,7 @@ PhysmemCreateNewDmaBufBackedPMR(PVRSRV_DEVICE_NODE *psDevNode,
 	{
 		PVR_DPF((PVR_DBG_ERROR, "%s: Failed to create PMR (%s)",
 				 __func__, PVRSRVGetErrorStringKM(eError)));
-		goto errFreePhysAddr;
+		goto errUnmap;
 	}
 
 	return PVRSRV_OK;
