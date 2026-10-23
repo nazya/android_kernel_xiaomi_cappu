@@ -382,6 +382,24 @@ _PMRCreate(PMR_SIZE_T uiLogicalSize,
 		}
 	}
 
+	/* Each mapping entry indexes the ui32NumVirtChunks-entry translation
+	 * table filled in below; reject anything outside it before allocating. */
+	if (ui32NumPhysChunks > ui32NumVirtChunks)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: More physical (%u) than virtual (%u) chunks",
+				__FUNCTION__, ui32NumPhysChunks, ui32NumVirtChunks));
+		return PVRSRV_ERROR_PMR_BAD_MAPPINGTABLE_SIZE;
+	}
+	for (i = 0; i < ui32NumPhysChunks; i++)
+	{
+		if (pui32MappingTable[i] >= ui32NumVirtChunks)
+		{
+			PVR_DPF((PVR_DBG_ERROR, "%s: Mapping entry %u (%u) is out of bounds (%u)",
+					__FUNCTION__, i, pui32MappingTable[i], ui32NumVirtChunks));
+			return PVRSRV_ERROR_PMR_INVALID_MAP_INDEX_ARRAY;
+		}
+	}
+
 	pvPMRLinAddr = OSAllocMem(sizeof(*psPMR) + sizeof(*psMappingTable) + sizeof(IMG_UINT32) * ui32NumVirtChunks);
 
 	if (pvPMRLinAddr == NULL)
