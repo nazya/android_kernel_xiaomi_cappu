@@ -33,6 +33,7 @@
 #include "kd_imgsensor_errcode.h"
 
 #include "s5k5e8yxmipiraw_Sensor.h"
+#include "s5k5e8otp.h"
 
 /****************************Modify following Strings for debug****************************/
 #define PFX "s5k5e8yx_camera_sensor"
@@ -1084,6 +1085,8 @@ static kal_uint32 open(void)
 
 	/* initail sequence write in  */
 	sensor_init();
+	/* Read the OTP while the sensor is not streaming yet */
+	s5k5e8otp_read_cache();
 
 	spin_lock(&imgsensor_drv_lock);
 

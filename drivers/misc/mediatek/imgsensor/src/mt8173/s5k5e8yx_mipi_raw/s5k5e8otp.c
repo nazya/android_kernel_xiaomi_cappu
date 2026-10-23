@@ -194,6 +194,102 @@ static void ReadOtp(kal_uint16 address, unsigned char *iBuffer, unsigned int buf
 
 }
 
+/*
+ * On every camera open the HAL reads the layout marker at 0x0001, the AWB
+ * layout marker at 0x0A11 and the AWB records at 0x0A15 and 0x0A19, some of
+ * them several times. Each read above stops the sensor for about 120 ms, so
+ * a switch to this camera loses preview frames for seconds. The bytes are
+ * written at the factory: read them once, while open() still has the sensor
+ * in standby, and answer those reads from memory. Any other read, or all of
+ * them if this fails, still goes to the sensor as before.
+ */
+#define OTP_LAYOUT_ADDR		0x0001
+#define OTP_AWB_LAYOUT_ADDR	0x0A11
+#define OTP_AWB_ADDR		0x0A15
+#define OTP_AWB_SIZE		8
+
+/* Set once by s5k5e8otp_read_cache(); read by the ioctl, both under g_CAM_CALLock */
+static bool otp_cached;
+static u8 otp_layout;
+static u8 otp_awb_layout;
+static u8 otp_awb[OTP_AWB_SIZE];
+
+static int read_otp_byte(kal_uint16 addr, u8 *value)
+{
+	char pu_send_cmd[2] = {(char)(addr >> 8), (char)(addr & 0xFF) };
+
+	return iReadRegI2C(pu_send_cmd, 2, value, 1, S5K5E8OTP_DEVICE_ID);
+}
+
+/*
+ * Called only by open(), which kd_sensorlist runs under kdCam_Mutex, right
+ * after sensor_init() has put the sensor in standby.
+ */
+void s5k5e8otp_read_cache(void)
+{
+	u8 layout, awb_layout, awb[OTP_AWB_SIZE];
+	int i, ret;
+
+	if (otp_cached)
+		return;
+
+	/*
+	 * Select OTP page 14 and load it into the buffer at 0x0A04. Xiaomi's
+	 * Qualcomm kernels read this sensor's OTP with the same writes, waiting
+	 * 1 ms after each of the first two and 5 ms before reading the buffer.
+	 */
+	write_cmos_sensor_otp(0x0A00, 0x04);
+	msleep(1);
+	write_cmos_sensor_otp(0x0A02, 0x0E);
+	msleep(1);
+	write_cmos_sensor_otp(0x0A00, 0x01);
+	msleep(5);
+
+	ret = read_otp_byte(OTP_LAYOUT_ADDR, &layout);
+	if (!ret)
+		ret = read_otp_byte(OTP_AWB_LAYOUT_ADDR, &awb_layout);
+	for (i = 0; !ret && i < OTP_AWB_SIZE; i++)
+		ret = read_otp_byte(OTP_AWB_ADDR + i, &awb[i]);
+
+	/* Leave OTP access as ReadOtp does; the sensor stays in standby */
+	write_cmos_sensor_otp(0x0A00, 0x04);
+	write_cmos_sensor_otp(0x0A00, 0x00);
+
+	if (ret) {
+		CAM_CALERR("OTP read failed, reading it on each request\n");
+		return;
+	}
+	spin_lock(&g_CAM_CALLock);
+	otp_layout = layout;
+	otp_awb_layout = awb_layout;
+	memcpy(otp_awb, awb, sizeof(otp_awb));
+	otp_cached = true;
+	spin_unlock(&g_CAM_CALLock);
+	CAM_CALINF("OTP cached: layout 0x%x, AWB layout 0x%x, AWB %*ph\n",
+		   layout, awb_layout, OTP_AWB_SIZE, awb);
+}
+
+/* Answer one of the HAL's reads from the cache; false if it is not there */
+static bool read_otp_cache(kal_uint16 addr, unsigned int len, unsigned char *buf)
+{
+	bool hit = true;
+
+	spin_lock(&g_CAM_CALLock);
+	if (!otp_cached)
+		hit = false;
+	else if (addr == OTP_LAYOUT_ADDR && len == 1)
+		buf[0] = otp_layout;
+	else if (addr == OTP_AWB_LAYOUT_ADDR && len == 1)
+		buf[0] = otp_awb_layout;
+	else if ((addr == OTP_AWB_ADDR || addr == OTP_AWB_ADDR + 4) && len == 4)
+		memcpy(buf, &otp_awb[addr - OTP_AWB_ADDR], 4);
+	else
+		hit = false;
+	spin_unlock(&g_CAM_CALLock);
+
+	return hit;
+}
+
 /*Burst Write Data */
 static int iWriteData(unsigned int ui4_offset, unsigned int ui4_length, unsigned char *pinputdata)
 {
@@ -205,6 +301,10 @@ static int iReadData(kal_uint16 ui4_offset, unsigned int ui4_length, unsigned ch
 {
 /*int  i4RetValue = 0;*/
 	CAM_CALDB("camcal iReadData, ui4_length is %d!\n", ui4_length);
+	if (read_otp_cache(ui4_offset, ui4_length, pinputdata)) {
+		CAM_CALDB("[CAM_CAL] 0x%x from the cache\n", ui4_offset);
+		return 0;
+	}
 	if (ui4_length == 1) {/* layout check */
 		ReadOtp(ui4_offset, pinputdata, ui4_length);
 	} else if (ui4_length == 4) {/* awb  */
