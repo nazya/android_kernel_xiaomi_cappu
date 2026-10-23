@@ -115,7 +115,7 @@ static int iReadCAM_CAL(u16 a_u2Addr, u8 *a_puBuff)
 
 static kal_uint8 Read_AF_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
-	u8 readbuff, readbuff1;
+	u8 readbuff = 0, readbuff1 = 0;
 	iReadCAM_CAL(address, &readbuff);
 	iReadCAM_CAL((address+1), &readbuff1);
 	*iBuffer = readbuff1;
@@ -128,7 +128,7 @@ static kal_uint8 Read_AF_Otp(kal_uint16 address, unsigned char *iBuffer, unsigne
 
 static kal_uint8 Read_AWB_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
-	u8 readbuff, i;
+	u8 readbuff = 0, i;
 
 	for (i = 0; i < buffersize; i++) {
 		iReadCAM_CAL((address+i), &readbuff);
@@ -143,7 +143,7 @@ static kal_uint8 Read_AWB_Otp(kal_uint16 address, unsigned char *iBuffer, unsign
 
 static  kal_bool Read_LSC_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
-	u8 readbuff;
+	u8 readbuff = 0;
 	int i = 0;
 
 	printk("camcal,Read_LSC_Otp EEEE");
@@ -169,7 +169,7 @@ static  kal_bool Read_LSC_Otp(kal_uint16 address, unsigned char *iBuffer, unsign
 static  void ReadOtp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
 		kal_uint16 i = 0;
-		u8 readbuff;
+		u8 readbuff = 0;
 		int ret ;
 
 		CAM_CALDB("[CAM_CAL]ENTER address:0x%x buffersize:%d\n ", address, buffersize);

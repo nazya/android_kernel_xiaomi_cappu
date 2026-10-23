@@ -118,7 +118,7 @@ static int iReadCAM_CAL(u16 a_u2Addr, u8 *a_puBuff)
 
 static kal_uint8 Read_AF_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
-	u8 readbuff, i;
+	u8 readbuff = 0, i;
 
 	for (i = 0; i < buffersize; i++) {
 		iReadCAM_CAL((address+i), &readbuff);
