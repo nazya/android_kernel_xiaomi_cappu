@@ -69,8 +69,6 @@ static void ged_sync_cb(struct sync_fence *fence, struct sync_fence_waiter *wait
 
 	ged_monitor_3D_fence_notify();
 
-	ged_dvfs_cal_gpu_utilization_force();
-
 	psMonitor = GED_CONTAINER_OF(waiter, GED_MONITOR_3D_FENCE, sSyncWaiter);
 
 	ged_log_buf_print(ghLogBuf_DVFS, "[-] ged_monitor_3D_fence_done (ts=%llu) %p", t, psMonitor->psSyncFence);
@@ -81,6 +79,12 @@ static void ged_sync_cb(struct sync_fence *fence, struct sync_fence_waiter *wait
 static void ged_monitor_3D_fence_work_cb(struct work_struct *psWork)
 {
 	GED_MONITOR_3D_FENCE *psMonitor;
+
+	/*
+	 * The GPU utilization callback may allocate on its first use, so run it
+	 * here in process context rather than in the fence callback above.
+	 */
+	ged_dvfs_cal_gpu_utilization_force();
 
 
 #ifdef GED_DEBUG_MONITOR_3D_FENCE
