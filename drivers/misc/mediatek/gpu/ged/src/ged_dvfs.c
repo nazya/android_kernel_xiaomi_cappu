@@ -920,9 +920,9 @@ void ged_dvfs_save_loading_page(void) /* Need spinlocked */
 void ged_dvfs_cal_gpu_utilization_force(void)
 {
 	unsigned long ui32IRQFlags;
-	unsigned int loading;
-	unsigned int block;
-	unsigned int idle;
+	unsigned int loading = 0;
+	unsigned int block = 0;
+	unsigned int idle = 0;
 	unsigned long long t;
 	unsigned long ulwork;
 
@@ -931,7 +931,8 @@ void ged_dvfs_cal_gpu_utilization_force(void)
 
 	do_div(t, 1000);
 
-	ged_dvfs_cal_gpu_utilization(&loading, &block, &idle);
+	if (!ged_dvfs_cal_gpu_utilization(&loading, &block, &idle))
+		return;
 
 
 	spin_lock_irqsave(&g_sSpinLock, ui32IRQFlags);
