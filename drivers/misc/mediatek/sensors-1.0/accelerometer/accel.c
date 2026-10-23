@@ -16,6 +16,9 @@
 #include "inc/accel_factory.h"
 #include "sensor_performance.h"
 
+#define ACC_MIN_POLL_DELAY_NS 5000000LL
+#define ACC_MAX_POLL_DELAY_NS 160000000LL
+
 struct acc_context *acc_context_obj/* = NULL*/;
 
 
@@ -80,19 +83,14 @@ static void acc_work_func(struct work_struct *work)
 {
 	struct acc_context *cxt = NULL;
 	int x, y, z, status;
-	int64_t pre_ns, cur_ns;
-	int64_t delay_ms;
 	int err;
 
 	cxt = acc_context_obj;
-	delay_ms = atomic_read(&cxt->delay);
 
 	if (cxt->acc_data.get_data == NULL) {
 		ACC_PR_ERR("acc driver not register data path\n");
 		return;
 	}
-
-	cur_ns = getCurNS();
 
 	err = cxt->acc_data.get_data(&x, &y, &z, &status);
 
@@ -107,12 +105,10 @@ static void acc_work_func(struct work_struct *work)
 			cxt->drv_data.y = y;
 			cxt->drv_data.z = z;
 			cxt->drv_data.status = status;
-			pre_ns = cxt->drv_data.timestamp;
-			cxt->drv_data.timestamp = cur_ns;
+			cxt->drv_data.timestamp = getCurNS();
 	}
 
 	if (true == cxt->is_first_data_after_enable) {
-		pre_ns = cur_ns;
 		cxt->is_first_data_after_enable = false;
 		/* filter -1 value */
 		if (cxt->drv_data.x == ACC_INVALID_VALUE ||
@@ -128,17 +124,11 @@ static void acc_work_func(struct work_struct *work)
 	/* ACC_LOG("acc data[%d,%d,%d]\n" ,cxt->drv_data.acc_data.values[0], */
 	/* cxt->drv_data.acc_data.values[1],cxt->drv_data.acc_data.values[2]); */
 
-	while ((cur_ns - pre_ns) >= delay_ms*1800000LL) {
-		struct acc_data tmp_data = cxt->drv_data;
-		pre_ns += delay_ms*1000000LL;
-		tmp_data.timestamp = pre_ns;
-		acc_data_report(&tmp_data);
-	}
-
+	/* One physical acquisition produces exactly one boottime-stamped event. */
 	acc_data_report(&cxt->drv_data);
 
  acc_loop:
-	if (true == cxt->is_polling_run)
+	if (READ_ONCE(cxt->is_polling_run))
 		startTimer(&cxt->hrTimer, atomic_read(&cxt->delay), false);
 }
 
@@ -146,7 +136,8 @@ enum hrtimer_restart acc_poll(struct hrtimer *timer)
 {
 	struct acc_context *obj = (struct acc_context *)container_of(timer, struct acc_context, hrTimer);
 
-	queue_work(obj->accel_workqueue, &obj->report);
+	if (READ_ONCE(obj->is_polling_run))
+		queue_work(obj->accel_workqueue, &obj->report);
 
 	/* ACC_LOG("cur_ns = %lld\n", getCurNS()); */
 
@@ -196,29 +187,29 @@ static int acc_enable_and_batch(void)
 	struct acc_context *cxt = acc_context_obj;
 	int err;
 
+	/* Data reporting may stop while a no-data client keeps the chip powered. */
+	if (!cxt->is_active_data &&
+	    !cxt->acc_ctl.is_report_input_direct &&
+	    READ_ONCE(cxt->is_polling_run)) {
+		WRITE_ONCE(cxt->is_polling_run, false);
+		stopTimer(&cxt->hrTimer);
+		cancel_work_sync(&cxt->report);
+		stopTimer(&cxt->hrTimer);
+		cxt->drv_data.x = ACC_INVALID_VALUE;
+		cxt->drv_data.y = ACC_INVALID_VALUE;
+		cxt->drv_data.z = ACC_INVALID_VALUE;
+		ACC_LOG("acc stop polling done\n");
+	}
+
 	/* power on -> power off */
 	if (cxt->power == 1 && cxt->enable == 0) {
 		ACC_LOG("ACC disable\n");
-		/* stop polling firstly, if needed */
-		if (cxt->is_active_data == false &&
-			cxt->acc_ctl.is_report_input_direct == false &&
-			cxt->is_polling_run == true) {
-			smp_mb();/* for memory barrier */
-			stopTimer(&cxt->hrTimer);
-			smp_mb();/* for memory barrier */
-			cancel_work_sync(&cxt->report);
-			cxt->drv_data.x = ACC_INVALID_VALUE;
-			cxt->drv_data.y = ACC_INVALID_VALUE;
-			cxt->drv_data.z = ACC_INVALID_VALUE;
-			cxt->is_polling_run = false;
-			ACC_LOG("acc stop polling done\n");
-		}
 		/* turn off the power */
 		if (cxt->is_active_data == false && cxt->is_active_nodata == false) {
 			err = cxt->acc_ctl.enable_nodata(0);
 			if (err) {
 				ACC_PR_ERR("acc turn off power err = %d\n", err);
-				return -1;
+				return err;
 			}
 			ACC_LOG("acc turn off power done\n");
 		}
@@ -235,7 +226,7 @@ static int acc_enable_and_batch(void)
 			err = cxt->acc_ctl.enable_nodata(1);
 			if (err) {
 				ACC_PR_ERR("acc turn on power err = %d\n", err);
-				return -1;
+				return err;
 			}
 			ACC_LOG("acc turn on power done\n");
 		}
@@ -252,21 +243,24 @@ static int acc_enable_and_batch(void)
 			err = cxt->acc_ctl.batch(0, cxt->delay_ns, 0);
 		if (err) {
 			ACC_PR_ERR("acc set batch(ODR) err %d\n", err);
-			return -1;
+			return err;
 		}
 		ACC_LOG("acc set ODR, fifo latency done\n");
 		/* start polling, if needed */
 		if (cxt->is_active_data == true
 			&& cxt->acc_ctl.is_report_input_direct == false) {
-			int mdelay = cxt->delay_ns;
+			int64_t mdelay = cxt->delay_ns / 1000000LL;
 
-			do_div(mdelay, 1000000);
-			atomic_set(&cxt->delay, mdelay);
+			if (mdelay < 1)
+				mdelay = 1;
+			if (mdelay > INT_MAX)
+				mdelay = INT_MAX;
+			atomic_set(&cxt->delay, (int)mdelay);
 			/* the first sensor start polling timer */
-			if (cxt->is_polling_run == false) {
-				startTimer(&cxt->hrTimer, atomic_read(&cxt->delay), true);
-				cxt->is_polling_run = true;
+			if (!READ_ONCE(cxt->is_polling_run)) {
 				cxt->is_first_data_after_enable = true;
+				WRITE_ONCE(cxt->is_polling_run, true);
+				startTimer(&cxt->hrTimer, atomic_read(&cxt->delay), true);
 			}
 			ACC_LOG("acc set polling delay %d ms\n", atomic_read(&cxt->delay));
 		}
@@ -285,24 +279,48 @@ static ssize_t acc_store_enable_nodata(struct device *dev, struct device_attribu
 #if !defined(CONFIG_MTK_SCP_SENSORHUB_V1) && !defined(CONFIG_NANOHUB)
 	struct acc_context *cxt = acc_context_obj;
 	int err = 0;
+	int old_enable;
+	int old_power;
+	int64_t old_delay_ns;
+	bool old_active_nodata;
+	bool old_polling;
 
 	ACC_LOG("acc_store_enable nodata buf=%s\n", buf);
 	mutex_lock(&acc_context_obj->acc_op_mutex);
+	old_enable = cxt->enable;
+	old_power = cxt->power;
+	old_delay_ns = cxt->delay_ns;
+	old_active_nodata = cxt->is_active_nodata;
+	old_polling = READ_ONCE(cxt->is_polling_run);
 	if (!strncmp(buf, "1", 1)) {
-		cxt->enable = 1;
 		cxt->is_active_nodata = true;
 	} else if (!strncmp(buf, "0", 1)) {
-		cxt->enable = 0;
 		cxt->is_active_nodata = false;
 	} else {
 		ACC_PR_ERR(" acc_store enable nodata cmd error !!\n");
-		err = -1;
+		err = -EINVAL;
 		goto err_out;
 	}
+	cxt->enable = cxt->is_active_data || cxt->is_active_nodata;
 	err = acc_enable_and_batch();
+	if (err) {
+		cxt->enable = old_enable;
+		cxt->is_active_nodata = old_active_nodata;
+		cxt->delay_ns = old_delay_ns;
+		if (cxt->power != old_power ||
+		    READ_ONCE(cxt->is_polling_run) != old_polling) {
+			int rollback_err = acc_enable_and_batch();
+
+			/* A power-off rollback clears delay_ns; keep the staged batch. */
+			cxt->delay_ns = old_delay_ns;
+			if (rollback_err < 0)
+				ACC_PR_ERR("failed to restore accel state: %d\n",
+					   rollback_err);
+		}
+	}
 err_out:
 	mutex_unlock(&acc_context_obj->acc_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 #else
 	return count;
 #endif
@@ -321,33 +339,46 @@ static ssize_t acc_store_active(struct device *dev, struct device_attribute *att
 {
 	struct acc_context *cxt = acc_context_obj;
 	int err = 0;
+	int old_enable;
+	bool old_active_data;
+#ifndef CONFIG_NANOHUB
+	int old_power;
+	int64_t old_delay_ns;
+	bool old_polling;
+#endif
 
 	ACC_LOG("acc_store_active buf=%s\n", buf);
 	mutex_lock(&acc_context_obj->acc_op_mutex);
+	old_enable = cxt->enable;
+	old_active_data = cxt->is_active_data;
+#ifndef CONFIG_NANOHUB
+	old_power = cxt->power;
+	old_delay_ns = cxt->delay_ns;
+	old_polling = READ_ONCE(cxt->is_polling_run);
+#endif
 	if (!strncmp(buf, "1", 1)) {
-		cxt->enable = 1;
 		cxt->is_active_data = true;
 	} else if (!strncmp(buf, "0", 1)) {
-		cxt->enable = 0;
 		cxt->is_active_data = false;
 	} else {
 		ACC_PR_ERR(" acc_store_active error !!\n");
-		err = -1;
+		err = -EINVAL;
 		goto err_out;
 	}
+	cxt->enable = cxt->is_active_data || cxt->is_active_nodata;
 #ifdef CONFIG_NANOHUB
 	if (true == cxt->is_active_data || true == cxt->is_active_nodata) {
 		err = cxt->acc_ctl.enable_nodata(1);
 		if (err) {
 			ACC_PR_ERR("acc turn on power err = %d\n", err);
-			goto err_out;
+			goto restore_state;
 		}
 		ACC_LOG("acc turn on power done\n");
 	} else {
 		err = cxt->acc_ctl.enable_nodata(0);
 		if (err) {
 			ACC_PR_ERR("acc turn off power err = %d\n", err);
-			goto err_out;
+			goto restore_state;
 		}
 		ACC_LOG("acc turn off power done\n");
 	}
@@ -355,9 +386,30 @@ static ssize_t acc_store_active(struct device *dev, struct device_attribute *att
 	err = acc_enable_and_batch();
 #endif
 
+#ifdef CONFIG_NANOHUB
+restore_state:
+#endif
+	if (err) {
+		cxt->enable = old_enable;
+		cxt->is_active_data = old_active_data;
+#ifndef CONFIG_NANOHUB
+		cxt->delay_ns = old_delay_ns;
+		if (cxt->power != old_power ||
+		    READ_ONCE(cxt->is_polling_run) != old_polling) {
+			int rollback_err = acc_enable_and_batch();
+
+			/* A power-off rollback clears delay_ns; keep the staged batch. */
+			cxt->delay_ns = old_delay_ns;
+			if (rollback_err < 0)
+				ACC_PR_ERR("failed to restore accel state: %d\n",
+					   rollback_err);
+		}
+#endif
+	}
+
 err_out:
 	mutex_unlock(&acc_context_obj->acc_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -383,16 +435,28 @@ static ssize_t acc_store_batch(struct device *dev, struct device_attribute *attr
 {
 	struct acc_context *cxt = acc_context_obj;
 	int handle = 0, flag = 0, err = 0;
+	int64_t delay_ns, latency_ns;
+	int64_t old_delay_ns, old_latency_ns;
 
 	ACC_LOG(" acc_store_batch %s\n", buf);
 	err = sscanf(buf, "%d,%d,%lld,%lld", &handle, &flag,
-		&cxt->delay_ns, &cxt->latency_ns);
+		&delay_ns, &latency_ns);
 	if (err != 4) {
 		ACC_PR_ERR("acc_store_batch param error: err = %d\n", err);
-		return -1;
+		return -EINVAL;
 	}
+	if (delay_ns < 0 || latency_ns < 0)
+		return -EINVAL;
+	if (delay_ns < ACC_MIN_POLL_DELAY_NS)
+		delay_ns = ACC_MIN_POLL_DELAY_NS;
+	if (delay_ns > ACC_MAX_POLL_DELAY_NS)
+		delay_ns = ACC_MAX_POLL_DELAY_NS;
 
 	mutex_lock(&acc_context_obj->acc_op_mutex);
+	old_delay_ns = cxt->delay_ns;
+	old_latency_ns = cxt->latency_ns;
+	cxt->delay_ns = delay_ns;
+	cxt->latency_ns = latency_ns;
 
 #ifdef CONFIG_NANOHUB
 	if (cxt->acc_ctl.is_support_batch)
@@ -404,9 +468,29 @@ static ssize_t acc_store_batch(struct device *dev, struct device_attribute *attr
 #else
 	err = acc_enable_and_batch();
 #endif
+	if (err) {
+		cxt->delay_ns = old_delay_ns;
+		cxt->latency_ns = old_latency_ns;
+		if (cxt->power == 1 && old_delay_ns >= 0) {
+			int rollback_err;
+
+#ifdef CONFIG_NANOHUB
+			if (cxt->acc_ctl.is_support_batch)
+				rollback_err = cxt->acc_ctl.batch(0, old_delay_ns,
+							   old_latency_ns);
+			else
+				rollback_err = cxt->acc_ctl.batch(0, old_delay_ns, 0);
+#else
+			rollback_err = acc_enable_and_batch();
+#endif
+			if (rollback_err < 0)
+				ACC_PR_ERR("failed to restore accel rate: %d\n",
+					   rollback_err);
+		}
+	}
 
 	mutex_unlock(&acc_context_obj->acc_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 static ssize_t acc_show_batch(struct device *dev,
 				 struct device_attribute *attr, char *buf)
@@ -420,8 +504,10 @@ static ssize_t acc_store_flush(struct device *dev, struct device_attribute *attr
 	int handle = 0, err = 0;
 
 	err = kstrtoint(buf, 10, &handle);
-	if (err != 0)
+	if (err != 0) {
 		ACC_PR_ERR("acc_store_flush param error: err = %d\n", err);
+		return err;
+	}
 
 	ACC_PR_ERR("acc_store_flush param: handle %d\n", handle);
 
@@ -429,12 +515,14 @@ static ssize_t acc_store_flush(struct device *dev, struct device_attribute *attr
 	cxt = acc_context_obj;
 	if (cxt->acc_ctl.flush != NULL)
 		err = cxt->acc_ctl.flush();
-	else
+	else {
 		ACC_PR_ERR("ACC DRIVER OLD ARCHITECTURE DON'T SUPPORT ACC COMMON VERSION FLUSH\n");
+		err = -EOPNOTSUPP;
+	}
 	if (err < 0)
 		ACC_PR_ERR("acc enable flush err %d\n", err);
 	mutex_unlock(&acc_context_obj->acc_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 static ssize_t acc_show_flush(struct device *dev,
@@ -467,13 +555,15 @@ static ssize_t acc_store_cali(struct device *dev, struct device_attribute *attr,
 	cxt = acc_context_obj;
 	if (cxt->acc_ctl.set_cali != NULL)
 		err = cxt->acc_ctl.set_cali(cali_buf, count);
-	else
+	else {
 		ACC_PR_ERR("ACC DRIVER OLD ARCHITECTURE DON'T SUPPORT ACC COMMON VERSION FLUSH\n");
+		err = -EOPNOTSUPP;
+	}
 	if (err < 0)
 		ACC_PR_ERR("acc set cali err %d\n", err);
 	mutex_unlock(&acc_context_obj->acc_op_mutex);
 	vfree(cali_buf);
-	return count;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 static int gsensor_remove(struct platform_device *pdev)

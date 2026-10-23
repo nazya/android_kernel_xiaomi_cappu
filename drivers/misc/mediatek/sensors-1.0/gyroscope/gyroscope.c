@@ -15,6 +15,9 @@
 #include "inc/gyroscope.h"
 #include "sensor_performance.h"
 
+#define GYRO_MIN_POLL_DELAY_NS	5000000LL
+#define GYRO_MAX_POLL_DELAY_NS	160000000LL
+
 struct gyro_context *gyro_context_obj/* = NULL*/;
 static struct platform_device *pltfm_dev;
 
@@ -80,20 +83,17 @@ static void gyro_work_func(struct work_struct *work)
 
 	struct gyro_context *cxt = NULL;
 	int x = 0, y = 0, z = 0, status = 0;
-	int64_t pre_ns, cur_ns;
-	int64_t delay_ms;
 	int err = 0;
 
 	cxt  = gyro_context_obj;
-	delay_ms = atomic_read(&cxt->delay);
-
-	cur_ns = getCurNS();
 
     /* add wake lock to make sure data can be read before system suspend */
 	if (cxt->gyro_data.get_data != NULL)
-		cxt->gyro_data.get_data(&x, &y, &z, &status);
-	else
+		err = cxt->gyro_data.get_data(&x, &y, &z, &status);
+	else {
 		GYRO_PR_ERR("gyro driver not register data path\n");
+		err = -ENODEV;
+	}
 
 	if (err) {
 		GYRO_PR_ERR("get gyro data fails!!\n");
@@ -103,12 +103,10 @@ static void gyro_work_func(struct work_struct *work)
 		cxt->drv_data.y = y;
 		cxt->drv_data.z = z;
 		cxt->drv_data.status = status;
-		pre_ns = cxt->drv_data.timestamp;
-		cxt->drv_data.timestamp = cur_ns;
+		cxt->drv_data.timestamp = getCurNS();
 	 }
 
 	if (true ==  cxt->is_first_data_after_enable) {
-		pre_ns = cur_ns;
 		cxt->is_first_data_after_enable = false;
 		/* filter -1 value */
 		if (cxt->drv_data.x == GYRO_INVALID_VALUE ||
@@ -122,18 +120,11 @@ static void gyro_work_func(struct work_struct *work)
 	/* GYRO_LOG("gyro data[%d,%d,%d]\n" ,cxt->drv_data.gyro_data.values[0], */
 	/* cxt->drv_data.gyro_data.values[1],cxt->drv_data.gyro_data.values[2]); */
 
-	while ((cur_ns - pre_ns) >= delay_ms*1800000LL) {
-		struct gyro_data tmp_data = cxt->drv_data;
-
-		pre_ns += delay_ms*1000000LL;
-		tmp_data.timestamp = pre_ns;
-		gyro_data_report(&tmp_data);
-	}
-
+	/* One physical acquisition produces exactly one boottime-stamped event. */
 	gyro_data_report(&cxt->drv_data);
 
 gyro_loop:
-	if (true == cxt->is_polling_run)
+	if (READ_ONCE(cxt->is_polling_run))
 		startTimer(&cxt->hrTimer, atomic_read(&cxt->delay), false);
 }
 
@@ -141,7 +132,8 @@ enum hrtimer_restart gyro_poll(struct hrtimer *timer)
 {
 	struct gyro_context *obj = (struct gyro_context *)container_of(timer, struct gyro_context, hrTimer);
 
-	queue_work(obj->gyro_workqueue, &obj->report);
+	if (READ_ONCE(obj->is_polling_run))
+		queue_work(obj->gyro_workqueue, &obj->report);
 
 	/* GYRO_LOG("cur_nt = %lld\n", getCurNT()); */
 
@@ -191,29 +183,29 @@ static int gyro_enable_and_batch(void)
 	struct gyro_context *cxt = gyro_context_obj;
 	int err;
 
+	/* Data reporting may stop while a no-data client keeps the chip powered. */
+	if (!cxt->is_active_data &&
+	    !cxt->gyro_ctl.is_report_input_direct &&
+	    READ_ONCE(cxt->is_polling_run)) {
+		WRITE_ONCE(cxt->is_polling_run, false);
+		stopTimer(&cxt->hrTimer);
+		cancel_work_sync(&cxt->report);
+		stopTimer(&cxt->hrTimer);
+		cxt->drv_data.x = GYRO_INVALID_VALUE;
+		cxt->drv_data.y = GYRO_INVALID_VALUE;
+		cxt->drv_data.z = GYRO_INVALID_VALUE;
+		GYRO_LOG("gyro stop polling done\n");
+	}
+
 	/* power on -> power off */
 	if (cxt->power == 1 && cxt->enable == 0) {
 		GYRO_LOG("GYRO disable\n");
-		/* stop polling firstly, if needed */
-		if (cxt->is_active_data == false
-			&& cxt->gyro_ctl.is_report_input_direct == false
-			&& cxt->is_polling_run == true) {
-			smp_mb();/* for memory barrier */
-			stopTimer(&cxt->hrTimer);
-			smp_mb();/* for memory barrier */
-			cancel_work_sync(&cxt->report);
-			cxt->drv_data.x = GYRO_INVALID_VALUE;
-			cxt->drv_data.y = GYRO_INVALID_VALUE;
-			cxt->drv_data.z = GYRO_INVALID_VALUE;
-			cxt->is_polling_run = false;
-			GYRO_LOG("gyro stop polling done\n");
-		}
 		/* turn off the power */
 		if (cxt->is_active_data == false && cxt->is_active_nodata == false) {
 			err = cxt->gyro_ctl.enable_nodata(0);
 			if (err) {
 				GYRO_PR_ERR("gyro turn off power err = %d\n", err);
-				return -1;
+				return err;
 			}
 			GYRO_LOG("gyro turn off power done\n");
 		}
@@ -230,7 +222,7 @@ static int gyro_enable_and_batch(void)
 			err = cxt->gyro_ctl.enable_nodata(1);
 			if (err) {
 				GYRO_PR_ERR("gyro turn on power err = %d\n", err);
-				return -1;
+				return err;
 			}
 			GYRO_LOG("gyro turn on power done\n");
 		}
@@ -247,21 +239,24 @@ static int gyro_enable_and_batch(void)
 			err = cxt->gyro_ctl.batch(0, cxt->delay_ns, 0);
 		if (err) {
 			GYRO_PR_ERR("gyro set batch(ODR) err %d\n", err);
-			return -1;
+			return err;
 		}
 		GYRO_LOG("gyro set ODR, fifo latency done\n");
 		/* start polling, if needed */
 		if (cxt->is_active_data == true
 			&& cxt->gyro_ctl.is_report_input_direct == false) {
-			int mdelay = cxt->delay_ns;
+			int64_t mdelay = cxt->delay_ns / 1000000LL;
 
-			do_div(mdelay, 1000000);
-			atomic_set(&cxt->delay, mdelay);
+			if (mdelay < 1)
+				mdelay = 1;
+			if (mdelay > INT_MAX)
+				mdelay = INT_MAX;
+			atomic_set(&cxt->delay, (int)mdelay);
 			/* the first sensor start polling timer */
-			if (cxt->is_polling_run == false) {
-				startTimer(&cxt->hrTimer, atomic_read(&cxt->delay), true);
-				cxt->is_polling_run = true;
+			if (!READ_ONCE(cxt->is_polling_run)) {
 				cxt->is_first_data_after_enable = true;
+				WRITE_ONCE(cxt->is_polling_run, true);
+				startTimer(&cxt->hrTimer, atomic_read(&cxt->delay), true);
 			}
 			GYRO_LOG("gyro set polling delay %d ms\n", atomic_read(&cxt->delay));
 		}
@@ -288,43 +283,76 @@ static ssize_t gyro_store_enable_nodata(struct device *dev, struct device_attrib
 {
 	struct gyro_context *cxt = gyro_context_obj;
 	int err = 0;
+	int old_enable;
+	bool old_active_nodata;
+#ifndef CONFIG_NANOHUB
+	int old_power;
+	int64_t old_delay_ns;
+	bool old_polling;
+#endif
 
 	GYRO_LOG("gyro_store_enable nodata buf=%s\n", buf);
 	mutex_lock(&gyro_context_obj->gyro_op_mutex);
+	old_enable = cxt->enable;
+	old_active_nodata = cxt->is_active_nodata;
+#ifndef CONFIG_NANOHUB
+	old_power = cxt->power;
+	old_delay_ns = cxt->delay_ns;
+	old_polling = READ_ONCE(cxt->is_polling_run);
+#endif
 	if (!strncmp(buf, "1", 1)) {
-		cxt->enable = 1;
 		cxt->is_active_nodata = true;
 	} else if (!strncmp(buf, "0", 1)) {
-		cxt->enable = 0;
 		cxt->is_active_nodata = false;
 	} else {
 		GYRO_INFO(" gyro_store enable nodata cmd error !!\n");
-		err = -1;
+		err = -EINVAL;
 		goto err_out;
 	}
+	cxt->enable = cxt->is_active_data || cxt->is_active_nodata;
 #ifdef CONFIG_NANOHUB
 		if (true == cxt->is_active_data || true == cxt->is_active_nodata) {
 			err = cxt->gyro_ctl.enable_nodata(1);
 			if (err) {
 				GYRO_PR_ERR("gyro turn on power err = %d\n", err);
-				goto err_out;
+				goto restore_state;
 			}
 			GYRO_LOG("gyro turn on power done\n");
 		} else {
 			err = cxt->gyro_ctl.enable_nodata(0);
 			if (err) {
 				GYRO_PR_ERR("gyro turn off power err = %d\n", err);
-				goto err_out;
+				goto restore_state;
 			}
 			GYRO_LOG("gyro turn off power done\n");
 		}
 #else
 	err = gyro_enable_and_batch();
 #endif
+#ifdef CONFIG_NANOHUB
+restore_state:
+#endif
+	if (err) {
+		cxt->enable = old_enable;
+		cxt->is_active_nodata = old_active_nodata;
+#ifndef CONFIG_NANOHUB
+		cxt->delay_ns = old_delay_ns;
+		if (cxt->power != old_power ||
+		    READ_ONCE(cxt->is_polling_run) != old_polling) {
+			int rollback_err = gyro_enable_and_batch();
+
+			/* A power-off rollback clears delay_ns; keep the staged batch. */
+			cxt->delay_ns = old_delay_ns;
+			if (rollback_err < 0)
+				GYRO_PR_ERR("failed to restore gyro state: %d\n",
+					    rollback_err);
+		}
+#endif
+	}
 
 err_out:
 	mutex_unlock(&gyro_context_obj->gyro_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 static ssize_t gyro_store_active(struct device *dev, struct device_attribute *attr,
@@ -332,43 +360,76 @@ static ssize_t gyro_store_active(struct device *dev, struct device_attribute *at
 {
 	struct gyro_context *cxt = gyro_context_obj;
 	int err = 0;
+	int old_enable;
+	bool old_active_data;
+#ifndef CONFIG_NANOHUB
+	int old_power;
+	int64_t old_delay_ns;
+	bool old_polling;
+#endif
 
 	GYRO_LOG("gyro_store_active buf=%s\n", buf);
 	mutex_lock(&gyro_context_obj->gyro_op_mutex);
+	old_enable = cxt->enable;
+	old_active_data = cxt->is_active_data;
+#ifndef CONFIG_NANOHUB
+	old_power = cxt->power;
+	old_delay_ns = cxt->delay_ns;
+	old_polling = READ_ONCE(cxt->is_polling_run);
+#endif
 	if (!strncmp(buf, "1", 1)) {
-		cxt->enable = 1;
 		cxt->is_active_data = true;
 	} else if (!strncmp(buf, "0", 1)) {
-		cxt->enable = 0;
 		cxt->is_active_data = false;
 	} else {
 		GYRO_PR_ERR(" gyro_store_active error !!\n");
-		err = -1;
+		err = -EINVAL;
 		goto err_out;
 	}
+	cxt->enable = cxt->is_active_data || cxt->is_active_nodata;
 #ifdef CONFIG_NANOHUB
 	if (true == cxt->is_active_data || true == cxt->is_active_nodata) {
 		err = cxt->gyro_ctl.enable_nodata(1);
 		if (err) {
 			GYRO_PR_ERR("gyro turn on power err = %d\n", err);
-			return -1;
+			goto restore_state;
 		}
 		GYRO_LOG("gyro turn on power done\n");
 	} else {
 		err = cxt->gyro_ctl.enable_nodata(0);
 		if (err) {
 			GYRO_PR_ERR("gyro turn off power err = %d\n", err);
-			return -1;
+			goto restore_state;
 		}
 		GYRO_LOG("gyro turn off power done\n");
 	}
 #else
 	err = gyro_enable_and_batch();
 #endif
+#ifdef CONFIG_NANOHUB
+restore_state:
+#endif
+	if (err) {
+		cxt->enable = old_enable;
+		cxt->is_active_data = old_active_data;
+#ifndef CONFIG_NANOHUB
+		cxt->delay_ns = old_delay_ns;
+		if (cxt->power != old_power ||
+		    READ_ONCE(cxt->is_polling_run) != old_polling) {
+			int rollback_err = gyro_enable_and_batch();
+
+			/* A power-off rollback clears delay_ns; keep the staged batch. */
+			cxt->delay_ns = old_delay_ns;
+			if (rollback_err < 0)
+				GYRO_PR_ERR("failed to restore gyro state: %d\n",
+					    rollback_err);
+		}
+#endif
+	}
 err_out:
 	mutex_unlock(&gyro_context_obj->gyro_op_mutex);
 	GYRO_LOG(" gyro_store_active done\n");
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 /*----------------------------------------------------------------------------*/
 static ssize_t gyro_show_active(struct device *dev,
@@ -391,16 +452,28 @@ static ssize_t gyro_store_batch(struct device *dev, struct device_attribute *att
 {
 	struct gyro_context *cxt = gyro_context_obj;
 	int handle = 0, flag = 0, err = 0;
+	int64_t delay_ns, latency_ns;
+	int64_t old_delay_ns, old_latency_ns;
 
 	GYRO_LOG("gyro_store_batch %s\n", buf);
 	err = sscanf(buf, "%d,%d,%lld,%lld", &handle, &flag,
-			&cxt->delay_ns, &cxt->latency_ns);
+			&delay_ns, &latency_ns);
 	if (err != 4) {
 		GYRO_INFO("gyro_store_batch param error: err = %d\n", err);
-		return -1;
+		return -EINVAL;
 	}
+	if (delay_ns < 0 || latency_ns < 0)
+		return -EINVAL;
+	if (delay_ns < GYRO_MIN_POLL_DELAY_NS)
+		delay_ns = GYRO_MIN_POLL_DELAY_NS;
+	if (delay_ns > GYRO_MAX_POLL_DELAY_NS)
+		delay_ns = GYRO_MAX_POLL_DELAY_NS;
 
 	mutex_lock(&gyro_context_obj->gyro_op_mutex);
+	old_delay_ns = cxt->delay_ns;
+	old_latency_ns = cxt->latency_ns;
+	cxt->delay_ns = delay_ns;
+	cxt->latency_ns = latency_ns;
 #ifdef CONFIG_NANOHUB
 	if (cxt->gyro_ctl.is_support_batch)
 		err = cxt->gyro_ctl.batch(0, cxt->delay_ns, cxt->latency_ns);
@@ -411,8 +484,28 @@ static ssize_t gyro_store_batch(struct device *dev, struct device_attribute *att
 #else
 	err = gyro_enable_and_batch();
 #endif
+	if (err) {
+		cxt->delay_ns = old_delay_ns;
+		cxt->latency_ns = old_latency_ns;
+		if (cxt->power == 1 && old_delay_ns >= 0) {
+			int rollback_err;
+
+#ifdef CONFIG_NANOHUB
+			if (cxt->gyro_ctl.is_support_batch)
+				rollback_err = cxt->gyro_ctl.batch(0, old_delay_ns,
+							    old_latency_ns);
+			else
+				rollback_err = cxt->gyro_ctl.batch(0, old_delay_ns, 0);
+#else
+			rollback_err = gyro_enable_and_batch();
+#endif
+			if (rollback_err < 0)
+				GYRO_PR_ERR("failed to restore gyro rate: %d\n",
+					    rollback_err);
+		}
+	}
 	mutex_unlock(&gyro_context_obj->gyro_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 static ssize_t gyro_show_batch(struct device *dev,
@@ -428,8 +521,10 @@ static ssize_t gyro_store_flush(struct device *dev, struct device_attribute *att
 	int handle = 0, err = 0;
 
 	err = kstrtoint(buf, 10, &handle);
-	if (err != 0)
+	if (err != 0) {
 		GYRO_INFO("gyro_store_flush param error: err = %d\n", err);
+		return err;
+	}
 
 	GYRO_LOG("gyro_store_flush param: handle %d\n", handle);
 
@@ -437,12 +532,14 @@ static ssize_t gyro_store_flush(struct device *dev, struct device_attribute *att
 	cxt = gyro_context_obj;
 	if (cxt->gyro_ctl.flush != NULL)
 		err = cxt->gyro_ctl.flush();
-	else
+	else {
 		GYRO_INFO("GYRO DRIVER OLD ARCHITECTURE DON'T SUPPORT GYRO COMMON VERSION FLUSH\n");
+		err = -EOPNOTSUPP;
+	}
 	if (err < 0)
 		GYRO_INFO("gyro enable flush err %d\n", err);
 	mutex_unlock(&gyro_context_obj->gyro_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 static ssize_t gyro_show_flush(struct device *dev,
@@ -474,13 +571,15 @@ static ssize_t gyro_store_cali(struct device *dev, struct device_attribute *attr
 	cxt = gyro_context_obj;
 	if (cxt->gyro_ctl.set_cali != NULL)
 		err = cxt->gyro_ctl.set_cali(cali_buf, count);
-	else
+	else {
 		GYRO_INFO("GYRO DRIVER OLD ARCHITECTURE DON'T SUPPORT GYRO COMMON VERSION FLUSH\n");
+		err = -EOPNOTSUPP;
+	}
 	if (err < 0)
 		GYRO_INFO("gyro set cali err %d\n", err);
 	mutex_unlock(&gyro_context_obj->gyro_op_mutex);
 	vfree(cali_buf);
-	return count;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 /* need work around again */
@@ -878,4 +977,3 @@ late_initcall(gyro_init);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("GYROSCOPE device driver");
 MODULE_AUTHOR("Mediatek");
-

@@ -454,8 +454,10 @@ static ssize_t als_store_flush(struct device *dev, struct device_attribute *attr
 	int handle = 0, err = 0;
 
 	err = kstrtoint(buf, 10, &handle);
-	if (err != 0)
+	if (err != 0) {
 		ALSPS_PR_ERR("als_store_flush param error: err = %d\n", err);
+		return err;
+	}
 
 	ALSPS_PR_ERR("als_store_flush param: handle %d\n", handle);
 
@@ -463,12 +465,14 @@ static ssize_t als_store_flush(struct device *dev, struct device_attribute *attr
 	cxt = alsps_context_obj;
 	if (cxt->als_ctl.flush != NULL)
 		err = cxt->als_ctl.flush();
-	else
+	else {
 		ALSPS_PR_ERR("ALS DRIVER OLD ARCHITECTURE DON'T SUPPORT ALS COMMON VERSION FLUSH\n");
+		err = -EOPNOTSUPP;
+	}
 	if (err < 0)
 		ALSPS_PR_ERR("als enable flush err %d\n", err);
 	mutex_unlock(&alsps_context_obj->alsps_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 static ssize_t als_show_flush(struct device *dev,
@@ -653,8 +657,10 @@ static ssize_t ps_store_flush(struct device *dev, struct device_attribute *attr,
 	int handle = 0, err = 0;
 
 	err = kstrtoint(buf, 10, &handle);
-	if (err != 0)
+	if (err != 0) {
 		ALSPS_PR_ERR("ps_store_flush param error: err = %d\n", err);
+		return err;
+	}
 
 	ALSPS_PR_ERR("ps_store_flush param: handle %d\n", handle);
 
@@ -662,12 +668,14 @@ static ssize_t ps_store_flush(struct device *dev, struct device_attribute *attr,
 	cxt = alsps_context_obj;
 	if (cxt->ps_ctl.flush != NULL)
 		err = cxt->ps_ctl.flush();
-	else
+	else {
 		ALSPS_PR_ERR("PS DRIVER OLD ARCHITECTURE DON'T SUPPORT PS COMMON VERSION FLUSH\n");
+		err = -EOPNOTSUPP;
+	}
 	if (err < 0)
 		ALSPS_PR_ERR("ps enable flush err %d\n", err);
 	mutex_unlock(&alsps_context_obj->alsps_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 static ssize_t ps_show_flush(struct device *dev,
@@ -1156,4 +1164,3 @@ late_initcall(alsps_init);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("ALSPS device driver");
 MODULE_AUTHOR("Mediatek");
-

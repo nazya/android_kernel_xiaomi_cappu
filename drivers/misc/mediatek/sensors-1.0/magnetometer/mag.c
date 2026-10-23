@@ -339,8 +339,10 @@ static ssize_t mag_store_flush(struct device *dev, struct device_attribute *attr
 	int handle = 0, err = 0;
 
 	err = kstrtoint(buf, 10, &handle);
-	if (err != 0)
+	if (err != 0) {
 		MAG_PR_ERR("mag_store_flush param error: err = %d\n", err);
+		return err;
+	}
 
 	MAG_LOG("mag_store_flush param: handle %d\n", handle);
 
@@ -348,12 +350,14 @@ static ssize_t mag_store_flush(struct device *dev, struct device_attribute *attr
 	cxt = mag_context_obj;
 	if (cxt->mag_ctl.flush != NULL)
 		err = cxt->mag_ctl.flush();
-	else
+	else {
 		MAG_INFO("MAG DRIVER OLD ARCHITECTURE DON'T SUPPORT ACC COMMON VERSION FLUSH\n");
+		err = -EOPNOTSUPP;
+	}
 	if (err < 0)
 		MAG_PR_ERR("mag enable flush err %d\n", err);
 	mutex_unlock(&mag_context_obj->mag_op_mutex);
-	return err;
+	return err ? (err < 0 ? err : -EIO) : count;
 }
 
 static ssize_t mag_show_cali(struct device *dev,
@@ -785,4 +789,3 @@ late_initcall(mag_init);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MAGELEROMETER device driver");
 MODULE_AUTHOR("Mediatek");
-

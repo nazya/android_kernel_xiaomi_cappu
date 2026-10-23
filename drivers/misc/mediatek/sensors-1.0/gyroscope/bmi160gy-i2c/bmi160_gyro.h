@@ -17,6 +17,7 @@
 
 #define BMG_DRIVER_VERSION "V1.0"
 extern struct i2c_client *bmi160_acc_i2c_client;
+extern int bmi160_acc_exec_command(u8 command);
 
 /* apply low pass filter on output */
 /* #define CONFIG_BMG_LOWPASS */
@@ -39,7 +40,8 @@ extern struct i2c_client *bmi160_acc_i2c_client;
 *1 rad = PI*degree/180, about 3.1416*degree/180
 *1 degree = rad*180/PI, about rad*180/3.1416
 */
-#define DEGREE_TO_RAD				57000
+/* millidegrees per radian, rounded from 180000/pi */
+#define DEGREE_TO_RAD				57296
 #define SW_CALIBRATION
 #define BMG_DEV_NAME				"bmi160_gyro"
 #define UNKNOWN_DEV					"unknown sensor"

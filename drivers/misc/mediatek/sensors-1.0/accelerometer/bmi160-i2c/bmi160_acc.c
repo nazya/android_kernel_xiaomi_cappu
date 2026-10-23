@@ -18,6 +18,7 @@
  */
 
 #include <linux/i2c.h>
+#include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
@@ -36,6 +37,8 @@
 #include <linux/atomic.h>
 #include <linux/module.h>
 #include <linux/gpio.h>
+#include <linux/timekeeping.h>
+#include <linux/wakelock.h>
 
 #include <hwmsensor.h>
 #include <sensors_io.h>
@@ -49,7 +52,9 @@
 /*#define FIFO_READ_USE_DMA_MODE_I2C*/
 #define BYTES_PER_LINE						(16)
 #define ACCEL_DMA_MAX_TRANSACTION_LENGTH	1003
+#ifdef CONFIG_CUSTOM_KERNEL_SIGNIFICANT_MOTION_SENSOR
 #define BMI160_SIGNIFICATION 1
+#endif
 /*#define BMI160_STEPDETECTOR 1*/
 static const struct i2c_device_id bmi160_acc_i2c_id[] = {
 	{BMI160_DEV_NAME, 0}, {}
@@ -105,6 +110,16 @@ struct bmi160_acc_i2c_data {
 	struct work_struct irq_work;
 	int IRQ;
 	int IRQ_GPIO_NUM;
+	struct mutex irq_lock;
+	bool irq_gpio_requested;
+	bool irq_requested;
+	bool smd_irq_wake_enabled;
+	bool accel_power_requested;
+	bool smd_power_requested;
+	struct wake_lock smd_wake_lock;
+	spinlock_t smd_irq_lock;
+	u64 smd_irq_timestamp;
+	u32 smd_irq_generation;
 	struct delayed_work work;
 	/*Pin Ctl functions*/
 	struct pinctrl *bmi160_pinctrl;
@@ -138,6 +153,7 @@ enum BMI_AXIS_TYPE {
 static const char *bmi_axis_name[AXIS_MAX] = { "x", "y", "z" };
 
 struct i2c_client *bmi160_acc_i2c_client;
+static DEFINE_MUTEX(bmi160_command_lock);
 static struct acc_init_info bmi160_acc_init_info;
 static struct bmi160_acc_i2c_data *obj_i2c_data;
 static bool sensor_power = true;
@@ -246,8 +262,8 @@ static int bma_i2c_read_block(struct i2c_client *client, u8 addr, u8 *data,
 	return err;
 }
 
-static int bma_i2c_write_block(struct i2c_client *client, u8 addr, u8 *data,
-			       u8 len)
+static int bma_i2c_write_block_raw(struct i2c_client *client, u8 addr,
+				   u8 *data, u8 len)
 {
 	/*
 	 *because address also occupies one byte,
@@ -272,6 +288,64 @@ static int bma_i2c_write_block(struct i2c_client *client, u8 addr, u8 *data,
 		err = 0;
 	}
 	return err;
+}
+
+static unsigned int bmi160_command_completion_us(u8 command)
+{
+	/*
+	 * Bosch BST-BMI160-DS000-09 section 2.11.39, table 24: 3.8 ms maximum for
+	 * accelerometer normal/low-power and 80 ms maximum for gyroscope
+	 * normal/fast-start.  Add the documented 0.3 ms worst case when all
+	 * sensor engines were asleep.  Commands without a longer table entry
+	 * retain the documented 400-us all-sensors-suspended I2C quiet time.
+	 * That also covers the 300-us system restart contribution documented
+	 * for soft reset; subsequent PMU commands wait for their own bounds.
+	 */
+	switch (command) {
+	case CMD_PMU_ACC_NORMAL:
+	case CMD_PMU_ACC_LP1:
+		return 4100;
+	case CMD_PMU_GYRO_NORMAL:
+	case CMD_PMU_GYRO_FASTSTART:
+		return 80300;
+	default:
+		return 400;
+	}
+}
+
+int bmi160_acc_exec_command(u8 command)
+{
+	struct i2c_client *client;
+	unsigned int completion_us;
+	int err;
+
+	completion_us = bmi160_command_completion_us(command);
+	mutex_lock(&bmi160_command_lock);
+	client = bmi160_acc_i2c_client;
+	if (!client) {
+		err = -ENODEV;
+		goto out;
+	}
+	err = bma_i2c_write_block_raw(client, BMI160_CMD_COMMANDS__REG,
+				      &command, 1);
+	if (!err) {
+		if (completion_us >= 20000)
+			msleep(DIV_ROUND_UP(completion_us, 1000));
+		else
+			usleep_range(completion_us, completion_us + 100);
+	}
+out:
+	mutex_unlock(&bmi160_command_lock);
+	return err;
+}
+EXPORT_SYMBOL_GPL(bmi160_acc_exec_command);
+
+static int bma_i2c_write_block(struct i2c_client *client, u8 addr, u8 *data,
+			       u8 len)
+{
+	if (client && addr == BMI160_CMD_COMMANDS__REG && len == 1)
+		return bmi160_acc_exec_command(data[0]);
+	return bma_i2c_write_block_raw(client, addr, data, len);
 }
 
 s8 bmi_i2c_read_wrapper(u8 dev_addr, u8 reg_addr, u8 *data, u8 len)
@@ -606,54 +680,75 @@ s8 bmi160_get_step_counter_en(struct i2c_client *client,
  *
  * @return zero success, non-zero failed
  */
-static int bmi160_acc_set_power_mode(struct i2c_client *client, bool enable)
+static int bmi160_acc_update_power_locked(struct bmi160_acc_i2c_data *obj)
 {
-	int err = 0;
-	u8 databuf[2] = { 0 };
-	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
-	uint8_t sig_enable = 0;
-	uint8_t step_det_enable = 0;
-	uint8_t step_counter_enable = 0;
+	bool enable = obj->accel_power_requested || obj->smd_power_requested;
+	u8 step_det_enable = 0;
+	u8 step_counter_enable = 0;
+	u8 command;
+	int err;
 
-	mutex_lock(&obj->lock);
-	if (enable == true)
-		databuf[0] = CMD_PMU_ACC_NORMAL;
-	else {
-		err =
-		    bmi160_get_significant_motion_en(obj_i2c_data->client,
-						     &sig_enable);
-		err +=
-		    bmi160_get_step_detector_en(obj_i2c_data->client,
-						&step_det_enable);
-		err +=
-		    bmi160_get_step_counter_en(obj_i2c_data->client,
-					       &step_counter_enable);
-		if (err < 0) {
-			GSE_ERR("write power mode failed.\n");
-			mutex_unlock(&obj->lock);
-			return BMI160_ACC_ERR_I2C;
-		} else if ((sig_enable == 0) && (step_det_enable == 0)
-			   && (step_counter_enable == 0))
-			databuf[0] = CMD_PMU_ACC_SUSPEND;
-		else {
-			mutex_unlock(&obj->lock);
+	/* Step detector/counter are latent users of the same accelerometer PMU. */
+	if (!enable) {
+		err = bmi160_get_step_detector_en(obj->client, &step_det_enable);
+		if (err)
 			return err;
-		}
+		err = bmi160_get_step_counter_en(obj->client,
+						 &step_counter_enable);
+		if (err)
+			return err;
+		enable = step_det_enable || step_counter_enable;
 	}
-	err =
-	    bma_i2c_write_block(client, BMI160_CMD_COMMANDS__REG, &databuf[0],
-				1);
-	if (err < 0) {
-		GSE_ERR("write power mode value to register failed.\n");
-		mutex_unlock(&obj->lock);
-		return BMI160_ACC_ERR_I2C;
+
+	command = enable ? CMD_PMU_ACC_NORMAL : CMD_PMU_ACC_SUSPEND;
+	err = bmi160_acc_exec_command(command);
+	if (err) {
+		GSE_ERR("write power mode value to register failed: %d\n", err);
+		return err;
 	}
 	sensor_power = enable;
-	bmi_delay(1);
-	mutex_unlock(&obj->lock);
 	GSE_LOG("set power mode enable = %d ok!\n", enable);
 	return 0;
 }
+
+static int bmi160_acc_set_power_mode(struct i2c_client *client, bool enable)
+{
+	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
+	bool previous;
+	int err;
+
+	if (!obj || !client || client != obj->client)
+		return -ENODEV;
+
+	mutex_lock(&obj->lock);
+	previous = obj->accel_power_requested;
+	obj->accel_power_requested = enable;
+	err = bmi160_acc_update_power_locked(obj);
+	if (err)
+		obj->accel_power_requested = previous;
+	mutex_unlock(&obj->lock);
+	return err;
+}
+
+int bmi160_acc_set_smd_power(bool enable)
+{
+	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
+	bool previous;
+	int err;
+
+	if (!obj || !obj->client)
+		return -ENODEV;
+
+	mutex_lock(&obj->lock);
+	previous = obj->smd_power_requested;
+	obj->smd_power_requested = enable;
+	err = bmi160_acc_update_power_locked(obj);
+	if (err)
+		obj->smd_power_requested = previous;
+	mutex_unlock(&obj->lock);
+	return err;
+}
+EXPORT_SYMBOL_GPL(bmi160_acc_set_smd_power);
 
 /*!
  * @brief Set range value for acc
@@ -2348,11 +2443,7 @@ BMI160_RETURN_FUNCTION_TYPE bmi160_init(struct bmi160_t *bmi160)
 
 static int bmi160_set_command_register(u8 cmd_reg)
 {
-	int comres = 0;
-	struct i2c_client *client = bmi160_acc_i2c_client;
-	comres +=
-	    bma_i2c_write_block(client, BMI160_CMD_COMMANDS__REG, &cmd_reg, 1);
-	return comres;
+	return bmi160_acc_exec_command(cmd_reg);
 }
 
 static ssize_t bmi160_fifo_bytecount_show(struct device_driver *ddri, char *buf)
@@ -3504,12 +3595,51 @@ static int bmi160_acc_get_data(int *x, int *y, int *z, int *status)
 	return 0;
 }
 
+int bmi160_acc_set_smd_irq_wake(bool enable)
+{
+	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
+	int err = 0;
+
+	if (!obj || !obj->irq_requested || obj->IRQ <= 0)
+		return -ENODEV;
+
+	mutex_lock(&obj->irq_lock);
+	if (obj->smd_irq_wake_enabled == enable)
+		goto out;
+
+	if (enable)
+		err = enable_irq_wake(obj->IRQ);
+	else
+		err = disable_irq_wake(obj->IRQ);
+	if (!err)
+		obj->smd_irq_wake_enabled = enable;
+out:
+	mutex_unlock(&obj->irq_lock);
+	return err;
+}
+EXPORT_SYMBOL_GPL(bmi160_acc_set_smd_irq_wake);
+
+int bmi160_acc_reset_smd_interrupt(void)
+{
+	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
+	u8 command = CMD_RESET_INT_ENGINE;
+	int err;
+
+	if (!obj || !obj->client)
+		return -ENODEV;
+
+	err = bmi160_acc_exec_command(command);
+	return err;
+}
+EXPORT_SYMBOL_GPL(bmi160_acc_reset_smd_interrupt);
+
 static void bmi_signification_motion_interrupt_handle(struct bmi160_acc_i2c_data
-						      *client_data)
+						      *client_data,
+						      u64 irq_timestamp,
+						      u32 irq_generation)
 {
 #if defined(BMI160_SIGNIFICATION)
-	step_notify(TYPE_SIGNIFICANT);
-	bmi160_set_command_register(CMD_RESET_INT_ENGINE);
+	step_notify_significant(irq_timestamp, irq_generation);
 #endif
 }
 
@@ -3527,10 +3657,28 @@ static void bmi_irq_work_func(struct work_struct *work)
 	    container_of((struct work_struct *)work,
 			 struct bmi160_acc_i2c_data, irq_work);
 	unsigned char int_status[4] = { 0, 0, 0, 0 };
+	unsigned long flags;
+	u64 irq_timestamp;
+	u32 irq_generation;
+	int err;
 
-	client_data->device.bus_read(client_data->device.dev_addr,
-				     BMI160_USER_INTR_STAT_0_ADDR, int_status,
-				     4);
+	/*
+	 * Snapshot the edge metadata before consuming status.  Rearm clears the
+	 * old latch before publishing its new generation, and the common layer
+	 * rejects this snapshot if a disable/rearm commits while the read runs.
+	 */
+	spin_lock_irqsave(&client_data->smd_irq_lock, flags);
+	irq_timestamp = client_data->smd_irq_timestamp;
+	irq_generation = client_data->smd_irq_generation;
+	spin_unlock_irqrestore(&client_data->smd_irq_lock, flags);
+
+	err = client_data->device.bus_read(client_data->device.dev_addr,
+				   BMI160_USER_INTR_STAT_0_ADDR, int_status, 4);
+	if (err) {
+		GSE_ERR("failed to read interrupt status: %d\n", err);
+		return;
+	}
+
 	ACC_LOG("%x %x %x %x\n", int_status[0], int_status[1], int_status[2],
 		int_status[3]);
 	if (BMI160_GET_BITSLICE
@@ -3538,38 +3686,62 @@ static void bmi_irq_work_func(struct work_struct *work)
 		bmi_stepdetector_interrupt_handle(client_data);
 	if (BMI160_GET_BITSLICE
 	    (int_status[0], BMI160_USER_INTR_STAT_0_SIGNIFICANT_INTR))
-		bmi_signification_motion_interrupt_handle(client_data);
+		bmi_signification_motion_interrupt_handle(client_data,
+						      irq_timestamp,
+						      irq_generation);
 }
 
 static irqreturn_t bmi_irq_handler(int irq, void *handle)
 {
 	struct bmi160_acc_i2c_data *client_data = handle;
+
+#if defined(BMI160_SIGNIFICATION)
+	unsigned long flags;
+
+	spin_lock_irqsave(&client_data->smd_irq_lock, flags);
+	client_data->smd_irq_timestamp = ktime_get_boot_ns();
+	client_data->smd_irq_generation = step_c_get_smd_generation();
+	spin_unlock_irqrestore(&client_data->smd_irq_lock, flags);
+	wake_lock_timeout(&client_data->smd_wake_lock,
+			  msecs_to_jiffies(250));
+#endif
 	schedule_work(&client_data->irq_work);
 	return IRQ_HANDLED;
 }
 
 static int bmi160_request_irq(struct bmi160_acc_i2c_data *client_data)
 {
-	int err = 0;
-	struct device_node *node = NULL;
-	node = of_find_compatible_node(NULL, NULL, "mediatek,gsensor");
+	int err;
+	struct device_node *node = client_data->client->dev.of_node;
 
-	if (node) {
-		client_data->IRQ = irq_of_parse_and_map(node, 0);
-		GSE_LOG("bmi160 request_irq number: (0x%x)", client_data->IRQ);
-		err =
-		    request_irq(client_data->IRQ, bmi_irq_handler,
-				IRQF_TRIGGER_RISING, "bmi160_accint",
-				client_data);
-		if (err > 0)
-			GSE_ERR("bmi160 request_irq failed");
-	} else
-		GSE_ERR("[%s] can not find!", __func__);
+	INIT_WORK(&client_data->irq_work, bmi_irq_work_func);
+	if (!node) {
+		GSE_ERR("[%s] can not find interrupt node\n", __func__);
+		return -ENODEV;
+	}
+
+	client_data->IRQ = irq_of_parse_and_map(node, 0);
+	if (client_data->IRQ <= 0) {
+		GSE_ERR("failed to map bmi160 interrupt\n");
+		return -EINVAL;
+	}
+
+	client_data->client->irq = client_data->IRQ;
+	GSE_LOG("bmi160 request_irq number: (0x%x)", client_data->IRQ);
+	err = request_irq(client_data->IRQ, bmi_irq_handler,
+			  IRQF_TRIGGER_RISING, "bmi160_accint", client_data);
+	if (err) {
+		GSE_ERR("bmi160 request_irq failed: %d\n", err);
+		irq_dispose_mapping(client_data->IRQ);
+		client_data->client->irq = 0;
+		client_data->IRQ = 0;
+		return err;
+	}
+	client_data->irq_requested = true;
 
 	GSE_LOG("irq_num= %d IRQ_num=%d\n", client_data->IRQ_GPIO_NUM,
 		client_data->IRQ);
-	INIT_WORK(&client_data->irq_work, bmi_irq_work_func);
-	return err;
+	return 0;
 }
 
 static int bmi160_acc_i2c_probe(struct i2c_client *client,
@@ -3588,20 +3760,27 @@ static int bmi160_acc_i2c_probe(struct i2c_client *client,
 		goto exit;
 	}
 	memset(obj, 0, sizeof(struct bmi160_acc_i2c_data));
+	wake_lock_init(&obj->smd_wake_lock, WAKE_LOCK_SUSPEND,
+		       "bmi160_significant_motion");
+	spin_lock_init(&obj->smd_irq_lock);
 	obj->hw = hw;
 	err = hwmsen_get_convert(obj->hw->direction, &obj->cvt);
 	if (err) {
 		ACC_PR_ERR("invalid direction: %d\n", obj->hw->direction);
-		goto exit;
+		goto exit_free_obj;
 	}
 	obj_i2c_data = obj;
 	client->addr = *hw->i2c_addr;
 	obj->client = client;
-	bmi160_acc_i2c_client = new_client = obj->client;
+	new_client = obj->client;
 	i2c_set_clientdata(new_client, obj);
 	atomic_set(&obj->trace, 0);
 	atomic_set(&obj->suspend, 0);
 	mutex_init(&obj->lock);
+	mutex_init(&obj->irq_lock);
+	mutex_lock(&bmi160_command_lock);
+	bmi160_acc_i2c_client = new_client;
+	mutex_unlock(&bmi160_command_lock);
 	/* h/w init */
 	/*get sensor interrupt GPIO number*/
 	if (client->dev.of_node) {
@@ -3609,60 +3788,66 @@ static int bmi160_acc_i2c_probe(struct i2c_client *client,
 		match = of_match_device(of_match_ptr(gsensor_of_match), &client->dev);
 		if (!match) {
 			GSE_LOG("Error: No device match found\n");
-			return -ENODEV;
+			err = -ENODEV;
+			goto exit_init_failed;
 		}
 	}
 
 	obj->IRQ_GPIO_NUM = of_get_named_gpio(client->dev.of_node, "int-gpio", 0);
 	GSE_LOG("g_vproc_vsel_gpio_number %d\n", obj->IRQ_GPIO_NUM);
+	if (!gpio_is_valid(obj->IRQ_GPIO_NUM)) {
+		err = obj->IRQ_GPIO_NUM < 0 ? obj->IRQ_GPIO_NUM : -EINVAL;
+		GSE_ERR("Invalid gpio int_pin: %d\n", obj->IRQ_GPIO_NUM);
+		goto exit_init_failed;
+	}
 	err = gpio_request_one(obj->IRQ_GPIO_NUM, GPIOF_IN,
 				 "accel_int");
 	if (err < 0) {
-		GSE_ERR("Unable to request gpio int_pin\n");
-		gpio_free(obj->IRQ_GPIO_NUM);
-		return -EFAULT;
+		GSE_ERR("Unable to request gpio int_pin: %d\n", err);
+		goto exit_init_failed;
 	}
+	obj->irq_gpio_requested = true;
 
 	err = gpio_direction_input(obj->IRQ_GPIO_NUM);
 	if (err < 0) {
-		GSE_ERR("set_direction for irq gpio failed\n");
-		return -EFAULT;
+		GSE_ERR("set_direction for irq gpio failed: %d\n", err);
+		goto exit_init_failed;
 	}
 
 	/*get interrupr pin ctl functions*/
 	obj->bmi160_pinctrl = devm_pinctrl_get(&client->dev);
 	if (IS_ERR_OR_NULL(obj->bmi160_pinctrl)) {
 		GSE_ERR("Target does not use pinctrl\n");
-		err = PTR_ERR(obj->bmi160_pinctrl);
+		err = obj->bmi160_pinctrl ? PTR_ERR(obj->bmi160_pinctrl) : -ENODEV;
 		obj->bmi160_pinctrl = NULL;
-		return err;
+		goto exit_init_failed;
 	}
 
 	obj->eint_as_int = pinctrl_lookup_state(obj->bmi160_pinctrl, "state_eint_as_int");
 	if (IS_ERR_OR_NULL(obj->eint_as_int)) {
 		GSE_ERR("Can not get bmi state_eint_as_int pinstate\n");
-		err = PTR_ERR(obj->eint_as_int);
+		err = obj->eint_as_int ? PTR_ERR(obj->eint_as_int) : -ENODEV;
 		obj->bmi160_pinctrl = NULL;
-		return err;
+		goto exit_init_failed;
 	}
 
 	obj->gyro_eint_as_int = pinctrl_lookup_state(obj->bmi160_pinctrl, "state_gyro_eint_as_int");
 	if (IS_ERR_OR_NULL(obj->gyro_eint_as_int)) {
 		GSE_ERR("Can not get bmi gyro_eint_as_int pinstate\n");
-		err = PTR_ERR(obj->gyro_eint_as_int);
+		err = obj->gyro_eint_as_int ? PTR_ERR(obj->gyro_eint_as_int) : -ENODEV;
 		obj->bmi160_pinctrl = NULL;
-		return err;
+		goto exit_init_failed;
 	}
 
 	err = pinctrl_select_state(obj->bmi160_pinctrl, obj->eint_as_int);
 	if (err) {
 		GSE_ERR("Can not set bmi160 state_eint_as_int pinstate\n");
-		return err;
+		goto exit_init_failed;
 	}
 	err = pinctrl_select_state(obj->bmi160_pinctrl, obj->gyro_eint_as_int);
 	if (err) {
 		GSE_ERR("Can not set bmi160 state_gyro_eint_as_int pinstate\n");
-		return err;
+		goto exit_init_failed;
 	}
 
 	obj->device.bus_read = bmi_i2c_read_wrapper;
@@ -3670,6 +3855,8 @@ static int bmi160_acc_i2c_probe(struct i2c_client *client,
 	obj->device.delay_msec = bmi_delay;
 	bmi160_init(&obj->device);
 
+	/* A reset invalidates the cached PMU state; force init to write suspend. */
+	sensor_power = true;
 	err = bmi160_acc_init_client(new_client, 1);
 	if (err)
 		goto exit_init_failed;
@@ -3683,10 +3870,15 @@ static int bmi160_acc_i2c_probe(struct i2c_client *client,
 						GFP_KERNEL | GFP_DMA);
 	if (!gpDMABuf_va) {
 		GSE_ERR("[DMA][Error] Allocate DMA I2C Buffer failed!\n");
-		goto exit;
+		err = -ENOMEM;
+		goto exit_init_failed;
 	}
 	memset(gpDMABuf_va, 0, ACCEL_DMA_MAX_TRANSACTION_LENGTH);
 #endif
+	err = bmi160_request_irq(obj);
+	if (err)
+		goto exit_init_failed;
+
 	err = misc_register(&bmi160_acc_device);
 	if (err) {
 		ACC_PR_ERR("bmi160_acc_device register failed.\n");
@@ -3709,14 +3901,14 @@ static int bmi160_acc_i2c_probe(struct i2c_client *client,
 	err = acc_register_control_path(&ctl);
 	if (err) {
 		ACC_PR_ERR("register acc control path error.\n");
-		goto exit_kfree;
+		goto exit_delete_attr;
 	}
 	data.get_data = bmi160_acc_get_data;
 	data.vender_div = 1000;
 	err = acc_register_data_path(&data);
 	if (err) {
 		ACC_PR_ERR("register acc data path error.\n");
-		goto exit_kfree;
+		goto exit_delete_attr;
 	}
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	obj->early_drv.level = EARLY_SUSPEND_LEVEL_DISABLE_FB - 1,
@@ -3728,16 +3920,36 @@ static int bmi160_acc_i2c_probe(struct i2c_client *client,
 	/* fifo setting */
 	bmi160_set_fifo_header_enable(ENABLE);
 	bmi160_set_fifo_time_enable(DISABLE);
-	bmi160_request_irq(obj_i2c_data);
 	bmi160_acc_init_flag = 0;
 	ACC_LOG("%s: is ok.\n", __func__);
 	return 0;
-
+      exit_delete_attr:
+	bmi160_acc_delete_attr(&
+			(bmi160_acc_init_info.platform_diver_addr->driver));
       exit_create_attr_failed:
 	misc_deregister(&bmi160_acc_device);
       exit_misc_device_register_failed:
+	if (obj->irq_requested) {
+		free_irq(obj->IRQ, obj);
+		obj->irq_requested = false;
+		cancel_work_sync(&obj->irq_work);
+		irq_dispose_mapping(obj->IRQ);
+		obj->client->irq = 0;
+		obj->IRQ = 0;
+	}
       exit_init_failed:
-      exit_kfree:
+	if (obj->irq_gpio_requested) {
+		gpio_free(obj->IRQ_GPIO_NUM);
+		obj->irq_gpio_requested = false;
+	}
+	mutex_lock(&bmi160_command_lock);
+	if (bmi160_acc_i2c_client == client)
+		bmi160_acc_i2c_client = NULL;
+	mutex_unlock(&bmi160_command_lock);
+	obj_i2c_data = NULL;
+	i2c_set_clientdata(client, NULL);
+      exit_free_obj:
+	wake_lock_destroy(&obj->smd_wake_lock);
 	kfree(obj);
       exit:
 	ACC_PR_ERR("%s: err = %d\n", __func__, err);
@@ -3747,7 +3959,22 @@ static int bmi160_acc_i2c_probe(struct i2c_client *client,
 
 static int bmi160_acc_i2c_remove(struct i2c_client *client)
 {
+	struct bmi160_acc_i2c_data *obj = i2c_get_clientdata(client);
 	int err = 0;
+
+	if (obj && obj->irq_requested) {
+		if (obj->smd_irq_wake_enabled) {
+			err = bmi160_acc_set_smd_irq_wake(false);
+			if (err)
+				GSE_ERR("failed to disable interrupt wake: %d\n", err);
+		}
+		free_irq(obj->IRQ, obj);
+		obj->irq_requested = false;
+		cancel_work_sync(&obj->irq_work);
+		irq_dispose_mapping(obj->IRQ);
+		obj->client->irq = 0;
+		obj->IRQ = 0;
+	}
 	err =
 	    bmi160_acc_delete_attr(&
 				   (bmi160_acc_init_info.platform_diver_addr->
@@ -3758,9 +3985,19 @@ static int bmi160_acc_i2c_remove(struct i2c_client *client)
 	if (err)
 		GSE_ERR("misc_deregister fail: %d\n", err);
 
-	bmi160_acc_i2c_client = NULL;
-	i2c_unregister_device(client);
-	kfree(obj_i2c_data);
+	mutex_lock(&bmi160_command_lock);
+	if (bmi160_acc_i2c_client == client)
+		bmi160_acc_i2c_client = NULL;
+	mutex_unlock(&bmi160_command_lock);
+	obj_i2c_data = NULL;
+	i2c_set_clientdata(client, NULL);
+	if (obj && obj->irq_gpio_requested) {
+		gpio_free(obj->IRQ_GPIO_NUM);
+		obj->irq_gpio_requested = false;
+	}
+	if (obj)
+		wake_lock_destroy(&obj->smd_wake_lock);
+	kfree(obj);
 	return 0;
 }
 
