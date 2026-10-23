@@ -159,7 +159,7 @@ static long MTK_SMI_COMPAT_ioctl(struct file *filp, unsigned int cmd, unsigned l
 */
 static unsigned long get_larb_base_addr(int larb_id)
 {
-	if (!smi_data || larb_id > smi_data->larb_nr || larb_id < 0)
+	if (!smi_data || larb_id >= smi_data->larb_nr || larb_id < 0)
 		return SMI_ERROR_ADDR;
 	else
 		return smi_data->larb_base[larb_id];
@@ -240,7 +240,7 @@ static void backup_larb_smi(int index)
 	int total_port_num = 0;
 
 	/* boundary check for larb_port_num and larb_port_backup access */
-	if (index < 0 || index > smi_data->larb_nr)
+	if (index < 0 || index >= smi_data->larb_nr)
 		return;
 
 	total_port_num = smi_data->smi_priv->larb_port_num[index];
@@ -274,7 +274,7 @@ static void restore_larb_smi(int index)
 	int total_port_num = 0;
 
 	/* boundary check for larb_port_num and larb_port_backup access */
-	if (index < 0 || index > smi_data->larb_nr)
+	if (index < 0 || index >= smi_data->larb_nr)
 		return;
 
 	total_port_num = smi_data->smi_priv->larb_port_num[index];
@@ -487,7 +487,7 @@ static int smi_bwc_config(MTK_SMI_BWC_CONFIG *p_conf, unsigned int *pu4LocalCnt)
 	}
 #endif
 	/* turn on larb clock */
-	for (i = 0; i <= smi_data->larb_nr; i++)
+	for (i = 0; i < smi_data->larb_nr; i++)
 		mtk_smi_larb_clock_on(i, true);
 
 	spin_lock(&g_SMIInfo.SMI_lock);
@@ -637,7 +637,7 @@ static int smi_bwc_config(MTK_SMI_BWC_CONFIG *p_conf, unsigned int *pu4LocalCnt)
 	spin_unlock(&g_SMIInfo.SMI_lock);
 
 	/*turn off larb clock */
-	for (i = 0; i <= smi_data->larb_nr; i++)
+	for (i = 0; i < smi_data->larb_nr; i++)
 		mtk_smi_larb_clock_off(i, true);
 
 	/* Since send uevent may trigger sleeping, we must send the event after releasing spin lock */
@@ -662,7 +662,7 @@ err_clkoff:
 	spin_unlock(&g_SMIInfo.SMI_lock);
 
 	/*turn off larb clock */
-	for (i = 0; i <= smi_data->larb_nr; i++)
+	for (i = 0; i < smi_data->larb_nr; i++)
 		mtk_smi_larb_clock_off(i, true);
 	return 0;
 }
@@ -676,7 +676,7 @@ int smi_common_init(void)
 {
 	int i;
 
-	for (i = 0; i <= smi_data->larb_nr; i++) {
+	for (i = 0; i < smi_data->larb_nr; i++) {
 		pLarbRegBackUp[i] = kmalloc(LARB_BACKUP_REG_SIZE, GFP_KERNEL | __GFP_ZERO);
 		if (pLarbRegBackUp[i] == NULL)
 			SMIERR("pLarbRegBackUp kmalloc fail %d\n", i);
@@ -692,7 +692,7 @@ int smi_common_init(void)
 
 	fglarbcallback = true;
 
-	for (i = smi_data->larb_nr; i >= 0; i--)
+	for (i = smi_data->larb_nr - 1; i >= 0; i--)
 		mtk_smi_larb_clock_off(i, true);
 
 	return 0;
@@ -1019,7 +1019,7 @@ static int mtk_smi_larb_runtime_suspend(struct device *dev)
 
 	if (!fglarbcallback)
 		return 0;
-	if (idx > smi_data->larb_nr)
+	if (idx >= smi_data->larb_nr)
 		return 0;
 
 	ret = _mtk_smi_larb_get(dev, false);
@@ -1041,7 +1041,7 @@ static int mtk_smi_larb_runtime_resume(struct device *dev)
 
 	if (!fglarbcallback)
 		return 0;
-	if (idx > smi_data->larb_nr)
+	if (idx >= smi_data->larb_nr)
 		return 0;
 
 	ret = _mtk_smi_larb_get(dev, false);
@@ -1492,7 +1492,7 @@ void smi_dumpDebugMsg(void)
 	smi_dumpCommonDebugMsg();
 
 	/* dump all SMI LARB */
-	for (u4Index = 0; u4Index <= smi_data->larb_nr; u4Index++)
+	for (u4Index = 0; u4Index < smi_data->larb_nr; u4Index++)
 		smi_dumpLarbDebugMsg(u4Index);
 }
 
@@ -1522,7 +1522,7 @@ int smi_debug_bus_hanging_detect(unsigned int larbs, int show_dump)
 		if (show_dump != 0)
 			smi_dumpCommonDebugMsg();
 
-		for (u4Index = 0; u4Index <= smi_data->larb_nr; u4Index++) {
+		for (u4Index = 0; u4Index < smi_data->larb_nr; u4Index++) {
 			unsigned long u4Base = get_larb_base_addr(u4Index);
 
 			if (u4Base != SMI_ERROR_ADDR) {
@@ -1540,7 +1540,7 @@ int smi_debug_bus_hanging_detect(unsigned int larbs, int show_dump)
 	}
 
 	/* Show the checked result */
-	for (i = 0; i <= smi_data->larb_nr; i++) {	/* Check each larb */
+	for (i = 0; i < smi_data->larb_nr; i++) {	/* Check each larb */
 		if (SMI_DGB_LARB_SELECT(larbs, i)) {
 			/* larb i has been selected */
 			/* Get status code */
