@@ -2676,7 +2676,15 @@ inline static int adopt_CAMERA_HW_FeatureControl(void *pBuf)
 			char *pPdaf_data = NULL;
 
 			unsigned long long *pFeaturePara_64 = (unsigned long long *)pFeaturePara;
-			void *usr_ptr = (void *)(uintptr_t) (*(pFeaturePara_64 + 1));
+			void *usr_ptr;
+
+			/* EEPROM offset, user buffer and its size */
+			if (FeatureParaLen < 3 * sizeof(*pFeaturePara_64) ||
+			    *(pFeaturePara_64 + 2) > PDAF_DATA_SIZE) {
+				kfree(pFeaturePara);
+				return -EINVAL;
+			}
+			usr_ptr = (void *)(uintptr_t) (*(pFeaturePara_64 + 1));
 #if 1
 			pPdaf_data = kmalloc(sizeof(char) * PDAF_DATA_SIZE, GFP_KERNEL);
 			if (pPdaf_data == NULL) {
