@@ -1109,6 +1109,7 @@ kd_MultiSensorControl(CAMERA_DUAL_CAMERA_SENSOR_ENUM InvokeCamera,
 MUINT32 kd_MultiSensorClose(void)
 {
 	MUINT32 ret = ERROR_NONE;
+	int power_ret;
 	u32 i = 0;
 
 	KD_MULTI_FUNCTION_ENTRY();
@@ -1145,10 +1146,12 @@ MUINT32 kd_MultiSensorClose(void)
 				/* Change the close power flow to close power in this function & */
 				/* directly call kdCISModulePowerOn to close the specific sensor */
 				/* The original flow will close all opened sensors at once */
-				kdCISModulePowerOn((CAMERA_DUAL_CAMERA_SENSOR_ENUM)
+				power_ret = kdCISModulePowerOn((CAMERA_DUAL_CAMERA_SENSOR_ENUM)
 						   g_invokeSocketIdx[i],
 						   (char *)g_invokeSensorNameStr[i], false,
 						   CAMERA_HW_DRVNAME1);
+				if (ERROR_NONE == ret)
+					ret = power_ret;
 
 				if (ERROR_NONE != ret) {
 					PK_ERR("[%s]", __func__);
@@ -1540,7 +1543,6 @@ inline static int adopt_CAMERA_HW_Open(void)
 inline static int adopt_CAMERA_HW_CheckIsAlive(void)
 {
 	UINT32 err = 0;
-	UINT32 err1 = 0;
 	UINT32 i = 0;
 	MUINT32 sensorID = 0;
 	MUINT32 retLen = 0;
@@ -1593,13 +1595,7 @@ inline static int adopt_CAMERA_HW_CheckIsAlive(void)
 		PK_DBG("ERROR:NULL g_pSensorFunc\n");
 	}
 
-	/* reset sensor state after power off */
-	if (g_pSensorFunc)
-        err1 = g_pSensorFunc->SensorClose();
-	if (ERROR_NONE != err1) {
-		PK_DBG("SensorClose\n");
-	}
-	/*  */
+	/* The probe opened no sensor: it only powers the modules down again */
 	kdModulePowerOn((CAMERA_DUAL_CAMERA_SENSOR_ENUM *) g_invokeSocketIdx, g_invokeSensorNameStr,
 			false, CAMERA_HW_DRVNAME1);
 	/*  */
@@ -2857,12 +2853,14 @@ inline static int adopt_CAMERA_HW_FeatureControl(void *pBuf)
 ********************************************************************************/
 inline static int adopt_CAMERA_HW_Close(void)
 {
+	UINT32 err = ERROR_NONE;
+
 	/* if (atomic_read(&g_CamHWOpend) == 0) { */
 	/* return 0; */
 	/* } */
 	/* else if(atomic_read(&g_CamHWOpend) == 1) { */
 	if (g_pSensorFunc) {
-		g_pSensorFunc->SensorClose();
+		err = g_pSensorFunc->SensorClose();
 	} else {
 		PK_DBG("[CAMERA_HW]ERROR:NULL g_pSensorFunc\n");
 	}
@@ -2873,6 +2871,10 @@ inline static int adopt_CAMERA_HW_Close(void)
 	/* kdModulePowerOn((CAMERA_DUAL_CAMERA_SENSOR_ENUM*)g_invokeSocketIdx, g_invokeSensorNameStr, false, CAMERA_HW_DRVNAME1); */
 	/* } */
 	/* atomic_set(&g_CamHWOpend, 0); */
+
+	/* Power steps are still on; the sensors stay open for a retry */
+	if (ERROR_NONE != err)
+		return -EIO;
 
 	atomic_set(&g_CamHWOpening, 0);
 
@@ -3456,9 +3458,12 @@ static int camera_hw_close_sensors(struct camera_hw_file *ctx)
 		return 0;
 
 	ret = adopt_CAMERA_HW_Close();
+	if (ret)
+		return ret;
+
 	g_sensor_owner = NULL;
 	ISP_SensorClockPut();
-	return ret;
+	return 0;
 }
 
 /* Commands that use or reselect the sensors another file may have open */
@@ -3668,7 +3673,12 @@ static int camera_hw_release_file(struct file *file, atomic_t *open_count)
 	/* A process that dies with its sensors open closes them here */
 	if (g_sensor_owner == ctx) {
 		PK_ERR("closing the sensors of a released file\n");
-		camera_hw_close_sensors(ctx);
+		if (camera_hw_close_sensors(ctx)) {
+			/* MCLK is off first; the steps left on block later power-ups */
+			PK_ERR("sensor power-down failed\n");
+			g_sensor_owner = NULL;
+			ISP_SensorClockPut();
+		}
 	}
 	camera_hw_put_mclk(ctx);
 	mutex_unlock(&kdCam_Mutex);
