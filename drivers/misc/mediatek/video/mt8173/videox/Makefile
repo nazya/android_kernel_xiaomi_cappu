@@ -69,5 +69,5 @@ endif
 ifeq ($(CONFIG_MTK_ALPS_BOX_SUPPORT), y)
 ccflags-y += -DMTK_ALPS_BOX_SUPPORT
 else
-#ccflags-y += -DMTK_DISP_IDLE_LP
+ccflags-y += -DMTK_DISP_IDLE_LP
 endif
