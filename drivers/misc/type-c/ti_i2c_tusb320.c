@@ -421,7 +421,7 @@ static ssize_t show_Cable_Orientation(struct device *dev, struct device_attribut
 	return snprintf(buf, sizeof(int),  "%u\n", orientation);
 }
 
-static DEVICE_ATTR(Cable_Orientation, 0664, show_Cable_Orientation, NULL);
+static DEVICE_ATTR(Cable_Orientation, 0444, show_Cable_Orientation, NULL);
 
 static ssize_t show_usb_hs_id(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -435,7 +435,7 @@ static ssize_t show_usb_hs_id(struct device *dev, struct device_attribute *attr,
 	return snprintf(buf, sizeof(int),  "%d\n", value);
 }
 
-static DEVICE_ATTR(usb_hs_id, 0664, show_usb_hs_id, NULL);
+static DEVICE_ATTR(usb_hs_id, 0444, show_usb_hs_id, NULL);
 
 static int ti_tusb320_probe(struct i2c_client *client,
 		const struct i2c_device_id *dev_id)
