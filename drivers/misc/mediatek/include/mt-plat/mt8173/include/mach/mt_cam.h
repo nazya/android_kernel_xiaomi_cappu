@@ -98,6 +98,8 @@ typedef unsigned char BOOL;
 /* defined in kd_sensorlist.c */
 extern void ISP_MCLK1_EN(BOOL En);
 extern void ISP_MCLK2_EN(BOOL En);
+extern int ISP_SensorClockGet(void);
+extern void ISP_SensorClockPut(void);
 extern int mtkcam_gpio_set(int PinIdx, int PwrType, int Val);
 extern PowerUp PowerOnList;
 extern const int camera_i2c_bus_num1;

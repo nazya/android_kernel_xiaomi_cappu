@@ -31,6 +31,7 @@
 /*	*/
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/mutex.h>
 /* #include	<linux/io.h> */
 #include <linux/delay.h>
 #include <linux/uaccess.h>
@@ -1175,6 +1176,9 @@ volatile MUINT32 PrvAddr[_ChannelMax] = { 0 };
 static MINT32 mMclk1User;
 static MINT32 mMclk2User;
 static MINT32 mMclk3User;
+/* ISP clock references the sensor driver holds; see ISP_SensorClockGet() */
+static MUINT32 SensorClockRefs;
+static DEFINE_MUTEX(SensorClockLock);
 /**********************************************
 ************************************************/
 #ifdef T_STAMP_2_0
@@ -3228,6 +3232,55 @@ static void ISP_EnableClock(MBOOL En)
 #endif
 	}
 }
+
+static void ISP_ResetMclk(void)
+{
+	mMclk1User = 0;
+	mMclk2User = 0;
+	mMclk3User = 0;
+	ISP_WR32(ISP_ADDR + 0x4200, 0x00000001);
+	ISP_WR32(ISP_ADDR + 0x4600, 0x00000001);
+	ISP_WR32(ISP_ADDR + 0x4a00, 0x00000001);
+	LOG_DBG("ISP_MCLK1_EN Release");
+}
+
+/*
+ * When a camera process dies, its ISP and sensor files are released in no
+ * particular order. The sensor driver holds an ISP clock reference from
+ * sensor open until the sensor is powered down, so the power-down still
+ * reaches clocked MCLK registers after the last ISP file is gone.
+ */
+int ISP_SensorClockGet(void)
+{
+	int ret = 0;
+
+	mutex_lock(&SensorClockLock);
+	/* The HAL opens the ISP before it powers a sensor */
+	if (IspInfo.UserCount || SensorClockRefs) {
+		ISP_EnableClock(MTRUE);
+		SensorClockRefs++;
+	} else {
+		ret = -ENODEV;
+	}
+	mutex_unlock(&SensorClockLock);
+
+	return ret;
+}
+EXPORT_SYMBOL(ISP_SensorClockGet);
+
+void ISP_SensorClockPut(void)
+{
+	mutex_lock(&SensorClockLock);
+	if (!WARN_ON(!SensorClockRefs)) {
+		SensorClockRefs--;
+		/* The MCLK reset the last ISP release skipped */
+		if (!SensorClockRefs && !IspInfo.UserCount)
+			ISP_ResetMclk();
+		ISP_EnableClock(MFALSE);
+	}
+	mutex_unlock(&SensorClockLock);
+}
+EXPORT_SYMBOL(ISP_SensorClockPut);
 
 /*******************************************************************************
 *
@@ -11177,14 +11230,11 @@ static MINT32 ISP_release(struct inode *pInode, struct file *pFile)
 		IspInfo.BufInfo.Read.Size = 0;
 		IspInfo.BufInfo.Read.Status = ISP_BUF_STATUS_EMPTY;
 	}
-	/* Reset MCLK   */
-	mMclk1User = 0;
-	mMclk2User = 0;
-	mMclk3User = 0;
-	ISP_WR32(ISP_ADDR + 0x4200, 0x00000001);
-	ISP_WR32(ISP_ADDR + 0x4600, 0x00000001);
-	ISP_WR32(ISP_ADDR + 0x4a00, 0x00000001);
-	LOG_DBG("ISP_MCLK1_EN Release");
+	/* Reset MCLK, unless a sensor is still powered from it */
+	mutex_lock(&SensorClockLock);
+	if (!SensorClockRefs)
+		ISP_ResetMclk();
+	mutex_unlock(&SensorClockLock);
 	ISP_BufWrite_Free();
 	/*      */
 EXIT:
