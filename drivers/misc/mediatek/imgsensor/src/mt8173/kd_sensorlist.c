@@ -313,6 +313,14 @@ struct camera_hw_file {
 	u32 mclk_refs;		/* CAMTG clock enables made through this file */
 };
 
+/*
+ * The file that opened the sensors. Until it closes them, only it may use or
+ * reselect them, and it holds an ISP clock reference for their power-down.
+ */
+static struct camera_hw_file *g_sensor_owner;
+/* The driver selection of the last successful KDIMGSENSORIOC_X_SET_DRIVER */
+static unsigned int g_sensor_driver[KDIMGSENSOR_MAX_INVOKE_DRIVERS];
+
 /* static u32 gCurrI2CBusEnableFlag = 0; */
 static u32 gI2CBusNum;
 
@@ -3416,16 +3424,73 @@ static long CAMERA_HW_Ioctl_Compat(struct file *filp, unsigned int cmd, unsigned
 * CAMERA_HW_Ioctl
 ********************************************************************************/
 
+static int camera_hw_open_sensors(struct camera_hw_file *ctx)
+{
+	int ret;
+
+	if (g_sensor_owner)
+		return -EBUSY;
+
+	ret = ISP_SensorClockGet();
+	if (ret)
+		return ret;
+
+	ret = adopt_CAMERA_HW_Open();
+	if (ret) {
+		ISP_SensorClockPut();
+		return ret;
+	}
+	g_sensor_owner = ctx;
+	return 0;
+}
+
+static int camera_hw_close_sensors(struct camera_hw_file *ctx)
+{
+	int ret;
+
+	/* Nothing was opened through this file */
+	if (g_sensor_owner != ctx)
+		return 0;
+
+	ret = adopt_CAMERA_HW_Close();
+	g_sensor_owner = NULL;
+	ISP_SensorClockPut();
+	return ret;
+}
+
+/* Commands that use or reselect the sensors another file may have open */
+static bool camera_hw_uses_sensors(unsigned int cmd)
+{
+	switch (cmd) {
+	case KDIMGSENSORIOC_X_SET_DRIVER:
+	case KDIMGSENSORIOC_X_GETINFO:
+	case KDIMGSENSORIOC_X_GETRESOLUTION2:
+	case KDIMGSENSORIOC_X_GETINFO2:
+	case KDIMGSENSORIOC_X_FEATURECONCTROL:
+	case KDIMGSENSORIOC_X_CONTROL:
+	case KDIMGSENSORIOC_X_SET_SHUTTER_GAIN_WAIT_DONE:
+	case KDIMGSENSORIOC_X_SET_CURRENT_SENSOR:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static long CAMERA_HW_Ioctl(struct file *a_pstFile,
 			    unsigned int a_u4Command, unsigned long a_u4Param)
 {
-
+	struct camera_hw_file *ctx = a_pstFile->private_data;
 	int i4RetValue = 0;
 	void *pBuff = NULL;
 	u32 *pIdx = NULL;
 
 	mutex_lock(&kdCam_Mutex);
 
+	if (g_sensor_owner && g_sensor_owner != ctx &&
+	    camera_hw_uses_sensors(a_u4Command)) {
+		i4RetValue = -EBUSY;
+		goto CAMERA_HW_Ioctl_EXIT;
+	}
 
 	if (_IOC_NONE == _IOC_DIR(a_u4Command)) {
 	} else {
@@ -3463,10 +3528,18 @@ static long CAMERA_HW_Ioctl(struct file *a_pstFile,
 		break;
 #endif
 	case KDIMGSENSORIOC_X_SET_DRIVER:
+		if (g_sensor_owner) {
+			/* The HAL repeats its selection; it may not change it */
+			if (memcmp(pBuff, g_sensor_driver, sizeof(g_sensor_driver)))
+				i4RetValue = -EBUSY;
+			break;
+		}
 		i4RetValue = kdSetDriver((unsigned int *)pBuff);
+		if (!i4RetValue)
+			memcpy(g_sensor_driver, pBuff, sizeof(g_sensor_driver));
 		break;
 	case KDIMGSENSORIOC_T_OPEN:
-		i4RetValue = adopt_CAMERA_HW_Open();
+		i4RetValue = camera_hw_open_sensors(ctx);
 		break;
 	case KDIMGSENSORIOC_X_GETINFO:
 		i4RetValue = adopt_CAMERA_HW_GetInfo(pBuff);
@@ -3484,10 +3557,19 @@ static long CAMERA_HW_Ioctl(struct file *a_pstFile,
 		i4RetValue = adopt_CAMERA_HW_Control(pBuff);
 		break;
 	case KDIMGSENSORIOC_T_CLOSE:
-		i4RetValue = adopt_CAMERA_HW_Close();
+		i4RetValue = camera_hw_close_sensors(ctx);
 		break;
 	case KDIMGSENSORIOC_T_CHECK_IS_ALIVE:
-		i4RetValue = adopt_CAMERA_HW_CheckIsAlive();
+		/* The probe ends by powering every sensor down */
+		if (g_sensor_owner) {
+			i4RetValue = -EBUSY;
+			break;
+		}
+		i4RetValue = ISP_SensorClockGet();
+		if (!i4RetValue) {
+			i4RetValue = adopt_CAMERA_HW_CheckIsAlive();
+			ISP_SensorClockPut();
+		}
 		break;
 	case KDIMGSENSORIOC_X_GET_SOCKET_POS:
 		i4RetValue = kdGetSocketPostion((unsigned int *)pBuff);
@@ -3504,11 +3586,15 @@ static long CAMERA_HW_Ioctl(struct file *a_pstFile,
 		break;
 
 	case KDIMGSENSORIOC_X_SET_CURRENT_SENSOR:
-		i4RetValue = kdSetCurrentSensorIdx(*pIdx);
+		/* The open sensors stay selected until they are closed */
+		if (g_sensor_owner && *pIdx != g_CurrentSensorIdx)
+			i4RetValue = -EBUSY;
+		else
+			i4RetValue = kdSetCurrentSensorIdx(*pIdx);
 		break;
 
 	case KDIMGSENSORIOC_X_SET_MCLK_PLL:
-		i4RetValue = camera_hw_set_mclk(a_pstFile->private_data, pBuff);
+		i4RetValue = camera_hw_set_mclk(ctx, pBuff);
 		break;
 
 	case KDIMGSENSORIOC_X_SET_GPIO:
@@ -3576,6 +3662,11 @@ static int camera_hw_release_file(struct file *file, atomic_t *open_count)
 	struct camera_hw_file *ctx = file->private_data;
 
 	mutex_lock(&kdCam_Mutex);
+	/* A process that dies with its sensors open closes them here */
+	if (g_sensor_owner == ctx) {
+		PK_ERR("closing the sensors of a released file\n");
+		camera_hw_close_sensors(ctx);
+	}
 	camera_hw_put_mclk(ctx);
 	mutex_unlock(&kdCam_Mutex);
 
