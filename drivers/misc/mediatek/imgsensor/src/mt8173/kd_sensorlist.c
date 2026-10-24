@@ -1187,6 +1187,9 @@ kdModulePowerOn(CAMERA_DUAL_CAMERA_SENSOR_ENUM socketIdx[KDIMGSENSOR_MAX_INVOKE_
 			ret = kdCISModulePowerOn(socketIdx[i], sensorNameStr[i], On, mode_name);
 			if (ERROR_NONE != ret) {
 				PK_ERR("[%s]", __func__);
+				/* Do not leave the modules powered so far on */
+				if (On)
+					kdModulePowerOn(socketIdx, sensorNameStr, false, mode_name);
 				return ret;
 			}
 		}

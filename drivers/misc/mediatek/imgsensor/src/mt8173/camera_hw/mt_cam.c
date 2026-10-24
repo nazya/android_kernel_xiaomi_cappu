@@ -13,6 +13,7 @@
  */
 
 #include <linux/videodev2.h>
+#include <linux/bitops.h>
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
@@ -88,6 +89,14 @@ PowerUp PowerOnList = {
 
 u32 pinSetIdx = 0;		/* default main sensor */
 
+/*
+ * The power steps of each pin set that are on, one bit per PowerInfo entry.
+ * A power-down undoes only these, so that powering a sensor down twice, or
+ * after a failed power-up, cannot drop regulator and MCLK references it does
+ * not hold.
+ */
+static u16 power_steps_on[2];
+
 BOOL hwpoweron(PowerInformation pwInfo, char *mode_name)
 {
 	switch (pwInfo.PowerType) {
@@ -111,7 +120,8 @@ BOOL hwpoweron(PowerInformation pwInfo, char *mode_name)
 	case LDO:
 	{
 		PK_DBG("Set GPIO pin(%d): %d\n", pwInfo.PowerType, pwInfo.Voltage);
-		mtkcam_gpio_set(pinSetIdx, pwInfo.PowerType, pwInfo.Voltage);
+		if (mtkcam_gpio_set(pinSetIdx, pwInfo.PowerType, pwInfo.Voltage) < 0)
+			return FALSE;
 	}
 	break;
 
@@ -163,7 +173,8 @@ BOOL hwpowerdown(PowerInformation pwInfo, char *mode_name)
 	case LDO:
 	{
 		PK_DBG("Set GPIO pin(%d): %d\n", pwInfo.PowerType, pwInfo.Voltage);
-		mtkcam_gpio_set(pinSetIdx, pwInfo.PowerType, Vol_Low);
+		if (mtkcam_gpio_set(pinSetIdx, pwInfo.PowerType, Vol_Low) < 0)
+			return FALSE;
 	}
 	break;
 
@@ -188,10 +199,44 @@ BOOL hwpowerdown(PowerInformation pwInfo, char *mode_name)
 }
 
 
+static PowerInformation *kdCISModulePowerInfo(char *currSensorName)
+{
+	int pwListIdx;
+
+	for (pwListIdx = 0; pwListIdx < 16; pwListIdx++) {
+		if (PowerOnList.PowerSeq[pwListIdx].SensorName == NULL)
+			break;
+		if (0 == strcmp(PowerOnList.PowerSeq[pwListIdx].SensorName, currSensorName))
+			return PowerOnList.PowerSeq[pwListIdx].PowerInfo;
+	}
+	return NULL;
+}
+
+/* Undo the steps of pinSetIdx that are on, last first; stop at a failure */
+static int kdCISModulePowerDown(PowerInformation *pwInfo, char *mode_name)
+{
+	u16 *steps = &power_steps_on[pinSetIdx];
+	int pwIdx;
+
+	for (pwIdx = 9; pwIdx >= 0; pwIdx--) {
+		if (!(*steps & BIT(pwIdx)))
+			continue;
+		if (hwpowerdown(pwInfo[pwIdx], mode_name) == FALSE) {
+			PK_ERR("power-down step %d failed, steps 0x%x stay on\n", pwIdx, *steps);
+			return -EIO;
+		}
+		*steps &= ~BIT(pwIdx);
+		if (pwIdx > 0 && pwInfo[pwIdx - 1].Delay > 0)
+			mdelay(pwInfo[pwIdx - 1].Delay);
+	}
+	return 0;
+}
+
 int kdCISModulePowerOn(CAMERA_DUAL_CAMERA_SENSOR_ENUM SensorIdx,
 						char *currSensorName, BOOL On, char *mode_name)
 {
-	int pwListIdx, pwIdx;
+	PowerInformation *pwInfo;
+	int pwIdx;
 
 	if ((DUAL_CAMERA_MAIN_SENSOR == SensorIdx) && currSensorName
 	    && (0 == strcmp(PowerOnList.PowerSeq[0].SensorName, currSensorName))) {
@@ -205,66 +250,35 @@ int kdCISModulePowerOn(CAMERA_DUAL_CAMERA_SENSOR_ENUM SensorIdx,
 		return -ENODEV;
 	}
 
-	/* power ON */
-	if (On) {
-		printk(KERN_ERR "kdCISModulePowerOn -on:currSensorName=%s\n", currSensorName);
-		printk(KERN_ERR "kdCISModulePowerOn -on:pinSetIdx=%d\n", pinSetIdx);
+	pwInfo = kdCISModulePowerInfo(currSensorName);
+	if (pwInfo == NULL)
+		return 0;
 
-		for (pwListIdx = 0; pwListIdx < 16; pwListIdx++) {
-			if (currSensorName && (PowerOnList.PowerSeq[pwListIdx].SensorName != NULL)
-			    && (0 == strcmp(PowerOnList.PowerSeq[pwListIdx].SensorName, currSensorName))) {
-				printk(KERN_ERR "kdCISModulePowerOn get in---\n");
-				printk(KERN_ERR "sensorIdx:%d\n", SensorIdx);
+	if (!On) {
+		PK_DBG("kdCISModulePowerOn -off:currSensorName=%s\n", currSensorName);
+		return kdCISModulePowerDown(pwInfo, mode_name);
+	}
 
-				for (pwIdx = 0; pwIdx < 10; pwIdx++) {
-					if (PowerOnList.PowerSeq[pwListIdx].PowerInfo[pwIdx].PowerType != VDD_None) {
-						if (hwpoweron(PowerOnList.PowerSeq[pwListIdx].PowerInfo[pwIdx], mode_name) == FALSE) {
-							printk(KERN_ERR "Power ON Fail\n");
-							goto _kdCISModulePowerOn_exit_;
-						}
-					} else {
-						PK_DBG("pwIdx=%d\n", pwIdx);
-						break;
-					}
-				}
-				break;
-			} else if (PowerOnList.PowerSeq[pwListIdx].SensorName == NULL) {
-				break;
-			} else {
-			}
+	printk(KERN_ERR "kdCISModulePowerOn -on:currSensorName=%s\n", currSensorName);
+	printk(KERN_ERR "kdCISModulePowerOn -on:pinSetIdx=%d\n", pinSetIdx);
+	printk(KERN_ERR "kdCISModulePowerOn get in---\n");
+	printk(KERN_ERR "sensorIdx:%d\n", SensorIdx);
+
+	/* Left on by a failed power-down: powering up again would stack references */
+	if (power_steps_on[pinSetIdx]) {
+		PK_ERR("power steps 0x%x are still on\n", power_steps_on[pinSetIdx]);
+		return -EBUSY;
+	}
+
+	for (pwIdx = 0; pwIdx < 10 && pwInfo[pwIdx].PowerType != VDD_None; pwIdx++) {
+		if (hwpoweron(pwInfo[pwIdx], mode_name) == FALSE) {
+			printk(KERN_ERR "Power ON Fail\n");
+			kdCISModulePowerDown(pwInfo, mode_name);
+			return -EIO;
 		}
-	} else {		/* power OFF */
-		PK_DBG("kdCISModulePowerOn -off:currSensorName=%s\n",
-			currSensorName);
-		for (pwListIdx = 0; pwListIdx < 16; pwListIdx++) {
-			if (currSensorName && (PowerOnList.PowerSeq[pwListIdx].SensorName != NULL)
-			    && (0 == strcmp(PowerOnList.PowerSeq[pwListIdx].SensorName, currSensorName))) {
-				PK_DBG("kdCISModulePowerOn get in---\n");
-				PK_DBG("sensorIdx:%d\n", SensorIdx);
-
-				for (pwIdx = 9; pwIdx >= 0; pwIdx--) {
-					if (PowerOnList.PowerSeq[pwListIdx].PowerInfo[pwIdx].PowerType != VDD_None) {
-						if (hwpowerdown(PowerOnList.PowerSeq[pwListIdx].PowerInfo[pwIdx], mode_name) == FALSE)
-							goto _kdCISModulePowerOn_exit_;
-						if (pwIdx > 0) {
-							if (PowerOnList.PowerSeq[pwListIdx].PowerInfo[pwIdx - 1].Delay > 0)
-								mdelay(PowerOnList.PowerSeq[pwListIdx].PowerInfo[pwIdx - 1].Delay);
-						}
-					} else {
-						PK_DBG("pwIdx=%d\n", pwIdx);
-					}
-				}
-			} else if (PowerOnList.PowerSeq[pwListIdx].SensorName == NULL) {
-				break;
-			} else {
-			}
-		}
-	}			/*  */
-
+		power_steps_on[pinSetIdx] |= BIT(pwIdx);
+	}
 	return 0;
-
- _kdCISModulePowerOn_exit_:
-	return -EIO;
 }
 EXPORT_SYMBOL(kdCISModulePowerOn);
 
