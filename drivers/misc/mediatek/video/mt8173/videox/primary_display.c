@@ -967,7 +967,8 @@ static disp_internal_buffer_info *allocat_decouple_buffer(int size)
 #if defined(MTK_FB_ION_SUPPORT)
 	void *buffer_va = NULL;
 	unsigned long buffer_mva = 0;
-	unsigned int mva_size = 0;
+	/* ion_phys() stores a size_t; into 4 bytes it would overrun buffer_mva */
+	size_t mva_size = 0;
 	struct ion_mm_data mm_data;
 	struct ion_client *client = NULL;
 	struct ion_handle *handle = NULL;
