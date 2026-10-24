@@ -12,6 +12,7 @@
  */
 
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <mach/md32_helper.h>
 #include <mach/md32_ipi.h>
 
