@@ -562,14 +562,36 @@ int dpmgr_path_remove_memout(disp_path_handle dp_handle, void *cmdq_handle)
 
 int dpmgr_path_set_dst_module(disp_path_handle dp_handle, DISP_MODULE_ENUM dst_module)
 {
+	int i = 0;
+	int ret;
+	int module_name;
+	int *modules;
+	int module_num;
 	ddp_path_handle handle;
+	DDP_MANAGER_CONTEXT *content = _get_context();
 
 	ASSERT(dp_handle != NULL);
 	handle = (ddp_path_handle) dp_handle;
 	ASSERT((handle->scenario >= 0 && handle->scenario < DDP_SCENARIO_MAX));
 	DDPDBG("set dst module on scenario %s, module %s\n",
 	       ddp_get_scenario_name(handle->scenario), ddp_get_module_name(dst_module));
-	return ddp_set_dst_module(handle->scenario, dst_module);
+	ret = ddp_set_dst_module(handle->scenario, dst_module);
+
+	/*
+	 * The new destination can add modules to the path, e.g. SPLIT1 for
+	 * DSIDUAL. Count them as used by this path, as dpmgr_create_path()
+	 * does, or dpmgr_modify_path() powers them on a second time.
+	 */
+	modules = ddp_get_scenario_list(handle->scenario);
+	module_num = ddp_get_module_num(handle->scenario);
+	for (i = 0; i < module_num; i++) {
+		module_name = modules[i];
+		if (content->module_usage_table[module_name] == 0) {
+			content->module_usage_table[module_name]++;
+			content->module_path_table[module_name] = handle;
+		}
+	}
+	return ret;
 }
 
 int dpmgr_path_get_mutex(disp_path_handle dp_handle)
