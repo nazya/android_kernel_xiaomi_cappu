@@ -576,6 +576,8 @@ struct sg_table *m4u_create_sgtable(unsigned long va, unsigned int size)
 			ret = m4u_create_sgtable_user(va_align, table);
 			if (ret) {
 				M4UMSG("%s error va=0x%lx, size=%d\n", __func__, va, size);
+				/* Unpin the pages filled before the failure */
+				m4u_put_sgtable_pages(table);
 				goto err;
 			}
 		}
@@ -736,8 +738,13 @@ int m4u_alloc_mva(m4u_client_t *client, M4U_PORT_ID port,
 	m4u_free_buf_info(pMvaInfo);
 
  err:
-	if (va)
+	if (va) {
+		/* Unpin user pages, as m4u_dealloc_mva() does for a mapped buffer */
+		if (!IS_ERR_OR_NULL(sg_table) && va < PAGE_OFFSET &&
+		    !(va >= VMALLOC_START && va <= VMALLOC_END))
+			m4u_put_sgtable_pages(sg_table);
 		m4u_destroy_sgtable(sg_table);
+	}
 
 	*pMva = 0;
 
