@@ -32,6 +32,9 @@
 #include "lens_info.h"
 #include "lens_list.h"
 
+/* kd_sensorlist.c: the sensor power-down waits for the lens to park */
+extern void kdSensorSetLensOpen(bool open);
+
 #define AF_DRVNAME "MAINAF"
 
 #if defined(CONFIG_MTK_LEGACY)
@@ -220,6 +223,7 @@ static int AF_Open(struct inode *a_pstInode, struct file *a_pstFile)
 	spin_lock(&g_AF_SpinLock);
 	g_s4AF_Opened = 1;
 	spin_unlock(&g_AF_SpinLock);
+	kdSensorSetLensOpen(true);
 
 	LOG_INF("End\n");
 
@@ -243,6 +247,7 @@ static int AF_Release(struct inode *a_pstInode, struct file *a_pstFile)
 		g_s4AF_Opened = 0;
 		spin_unlock(&g_AF_SpinLock);
 	}
+	kdSensorSetLensOpen(false);
 
 	LOG_INF("End\n");
 

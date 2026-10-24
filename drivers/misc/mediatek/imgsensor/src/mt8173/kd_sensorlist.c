@@ -320,6 +320,14 @@ struct camera_hw_file {
 static struct camera_hw_file *g_sensor_owner;
 /* The driver selection of the last successful KDIMGSENSORIOC_X_SET_DRIVER */
 static unsigned int g_sensor_driver[KDIMGSENSOR_MAX_INVOKE_DRIVERS];
+/*
+ * The main lens runs from the sensor's AFVDD and parks itself when its file
+ * is released. The HAL releases it before it closes the sensor, but a dying
+ * process releases the sensor file first: then the power-down of the sensors
+ * it left open waits until the lens has parked.
+ */
+static bool g_lens_open;
+static bool g_close_after_lens;
 
 /* static u32 gCurrI2CBusEnableFlag = 0; */
 static u32 gI2CBusNum;
@@ -3433,7 +3441,7 @@ static int camera_hw_open_sensors(struct camera_hw_file *ctx)
 {
 	int ret;
 
-	if (g_sensor_owner)
+	if (g_sensor_owner || g_close_after_lens)
 		return -EBUSY;
 
 	ret = ISP_SensorClockGet();
@@ -3448,6 +3456,29 @@ static int camera_hw_open_sensors(struct camera_hw_file *ctx)
 	g_sensor_owner = ctx;
 	return 0;
 }
+
+/* Close the sensors that a released file left open */
+static void camera_hw_close_orphan(void)
+{
+	PK_ERR("closing the sensors of a released file\n");
+	/* MCLK is off first; the steps left on block later power-ups */
+	if (adopt_CAMERA_HW_Close())
+		PK_ERR("sensor power-down failed\n");
+	ISP_SensorClockPut();
+}
+
+/* Called by the main lens driver on open, and on release after it parked */
+void kdSensorSetLensOpen(bool open)
+{
+	mutex_lock(&kdCam_Mutex);
+	g_lens_open = open;
+	if (!open && g_close_after_lens) {
+		g_close_after_lens = false;
+		camera_hw_close_orphan();
+	}
+	mutex_unlock(&kdCam_Mutex);
+}
+EXPORT_SYMBOL(kdSensorSetLensOpen);
 
 static int camera_hw_close_sensors(struct camera_hw_file *ctx)
 {
@@ -3569,7 +3600,7 @@ static long CAMERA_HW_Ioctl(struct file *a_pstFile,
 		break;
 	case KDIMGSENSORIOC_T_CHECK_IS_ALIVE:
 		/* The probe ends by powering every sensor down */
-		if (g_sensor_owner) {
+		if (g_sensor_owner || g_close_after_lens) {
 			i4RetValue = -EBUSY;
 			break;
 		}
@@ -3672,13 +3703,11 @@ static int camera_hw_release_file(struct file *file, atomic_t *open_count)
 	mutex_lock(&kdCam_Mutex);
 	/* A process that dies with its sensors open closes them here */
 	if (g_sensor_owner == ctx) {
-		PK_ERR("closing the sensors of a released file\n");
-		if (camera_hw_close_sensors(ctx)) {
-			/* MCLK is off first; the steps left on block later power-ups */
-			PK_ERR("sensor power-down failed\n");
-			g_sensor_owner = NULL;
-			ISP_SensorClockPut();
-		}
+		g_sensor_owner = NULL;
+		if (g_lens_open)
+			g_close_after_lens = true;
+		else
+			camera_hw_close_orphan();
 	}
 	camera_hw_put_mclk(ctx);
 	mutex_unlock(&kdCam_Mutex);
