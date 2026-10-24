@@ -308,6 +308,11 @@ static atomic_t g_CamHWOpening;
 static atomic_t g_CamDrvOpenCnt;
 static atomic_t g_CamDrvOpenCnt2;
 
+/* State of one open kd_camera_hw file; used under kdCam_Mutex */
+struct camera_hw_file {
+	u32 mclk_refs;		/* CAMTG clock enables made through this file */
+};
+
 /* static u32 gCurrI2CBusEnableFlag = 0; */
 static u32 gI2CBusNum;
 
@@ -2920,11 +2925,15 @@ inline static int kdSetSensorMclk(int *pBuf)
 	PK_DBG("========= MTKCAM_USING_CCF =======\n");
 	Check_ccf_clk();
 	if (1 == pSensorCtrl->on) {
-		clk_prepare_enable(g_camclk_camtg_sel);
+		ret = clk_prepare_enable(g_camclk_camtg_sel);
+		if (ret)
+			return ret;
 		if (pSensorCtrl->freq == 1 /*CAM_PLL_48_GROUP */)
-			clk_set_parent(g_camclk_camtg_sel, g_camclk_univpll_d26);
+			ret = clk_set_parent(g_camclk_camtg_sel, g_camclk_univpll_d26);
 		else if (pSensorCtrl->freq == 2 /*CAM_PLL_52_GROUP */)
-			clk_set_parent(g_camclk_camtg_sel, g_camclk_univpll2_d2);
+			ret = clk_set_parent(g_camclk_camtg_sel, g_camclk_univpll2_d2);
+		if (ret)
+			clk_disable_unprepare(g_camclk_camtg_sel);
 	} else {
 		clk_disable_unprepare(g_camclk_camtg_sel);
 	}
@@ -2944,6 +2953,39 @@ inline static int kdSetSensorMclk(int *pBuf)
 #endif				/* end of MTKCAM_USING_CCF */
 
 #endif				/* end of CONFIG_FPGA_EARLY_PORTING */
+}
+
+/*
+ * The HAL switches MCLK through its seninf file, not through the file that
+ * opens the sensor. Count the CAMTG clock enables of each file, so that
+ * release() can drop the ones a dead process left on and an unmatched off
+ * cannot drop another file's enable.
+ */
+static int camera_hw_set_mclk(struct camera_hw_file *ctx, ACDK_SENSOR_MCLK_STRUCT *mclk)
+{
+	int ret;
+
+	if (mclk->on != 1 && !ctx->mclk_refs)
+		return 0;
+
+	ret = kdSetSensorMclk((int *)mclk);
+	if (!ret) {
+		if (mclk->on == 1)
+			ctx->mclk_refs++;
+		else
+			ctx->mclk_refs--;
+	}
+	return ret;
+}
+
+static void camera_hw_put_mclk(struct camera_hw_file *ctx)
+{
+	ACDK_SENSOR_MCLK_STRUCT mclk = { .on = 0 };
+
+	while (ctx->mclk_refs) {
+		kdSetSensorMclk((int *)&mclk);
+		ctx->mclk_refs--;
+	}
 }
 
 inline static int kdSetSensorGpio(int *pBuf)
@@ -3466,7 +3508,7 @@ static long CAMERA_HW_Ioctl(struct file *a_pstFile,
 		break;
 
 	case KDIMGSENSORIOC_X_SET_MCLK_PLL:
-		i4RetValue = kdSetSensorMclk(pBuff);
+		i4RetValue = camera_hw_set_mclk(a_pstFile->private_data, pBuff);
 		break;
 
 	case KDIMGSENSORIOC_X_SET_GPIO:
@@ -3518,6 +3560,30 @@ CAMERA_HW_Ioctl_EXIT:
  * 4.Fill data structures into private_data
  * CAM_RESET
 ********************************************************************************/
+static int camera_hw_open_file(struct file *file, atomic_t *open_count)
+{
+	struct camera_hw_file *ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+
+	if (!ctx)
+		return -ENOMEM;
+	file->private_data = ctx;
+	atomic_inc(open_count);
+	return 0;
+}
+
+static int camera_hw_release_file(struct file *file, atomic_t *open_count)
+{
+	struct camera_hw_file *ctx = file->private_data;
+
+	mutex_lock(&kdCam_Mutex);
+	camera_hw_put_mclk(ctx);
+	mutex_unlock(&kdCam_Mutex);
+
+	kfree(ctx);
+	atomic_dec(open_count);
+	return 0;
+}
+
 static int CAMERA_HW_Open(struct inode *a_pstInode, struct file *a_pstFile)
 {
 	/* reset once in multi-open */
@@ -3532,8 +3598,7 @@ static int CAMERA_HW_Open(struct inode *a_pstInode, struct file *a_pstFile)
 
 	}
 	/*  */
-	atomic_inc(&g_CamDrvOpenCnt);
-	return 0;
+	return camera_hw_open_file(a_pstFile, &g_CamDrvOpenCnt);
 }
 
 /*******************************************************************************
@@ -3546,9 +3611,7 @@ static int CAMERA_HW_Open(struct inode *a_pstInode, struct file *a_pstFile)
 ********************************************************************************/
 static int CAMERA_HW_Release(struct inode *a_pstInode, struct file *a_pstFile)
 {
-	atomic_dec(&g_CamDrvOpenCnt);
-
-	return 0;
+	return camera_hw_release_file(a_pstFile, &g_CamDrvOpenCnt);
 }
 
 static const struct file_operations g_stCAMERA_HW_fops = {
@@ -3700,8 +3763,7 @@ static int CAMERA_HW_Open2(struct inode *a_pstInode, struct file *a_pstFile)
 
 		/* kdCISModulePowerOn(DUAL_CAMERA_MAIN_2_SENSOR,"",false,CAMERA_HW_DRVNAME2); */
 	}
-	atomic_inc(&g_CamDrvOpenCnt2);
-	return 0;
+	return camera_hw_open_file(a_pstFile, &g_CamDrvOpenCnt2);
 }
 
 /*******************************************************************************
@@ -3714,9 +3776,7 @@ static int CAMERA_HW_Open2(struct inode *a_pstInode, struct file *a_pstFile)
 ********************************************************************************/
 static int CAMERA_HW_Release2(struct inode *a_pstInode, struct file *a_pstFile)
 {
-	atomic_dec(&g_CamDrvOpenCnt2);
-
-	return 0;
+	return camera_hw_release_file(a_pstFile, &g_CamDrvOpenCnt2);
 }
 
 
