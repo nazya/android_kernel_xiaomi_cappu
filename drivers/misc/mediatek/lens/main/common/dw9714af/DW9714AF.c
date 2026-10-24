@@ -284,7 +284,9 @@ int DW9714AF_Release(struct inode *a_pstInode, struct file *a_pstFile)
 	LOG_INF("Start\n");
 
 	if (*g_pAF_Opened == 2) {
+		static const u16 ramp[] = { 400, 350, 300, 250, 200, 100 };
 		unsigned long position;
+		int i;
 
 		LOG_INF("Wait\n");
 		/*
@@ -292,28 +294,26 @@ int DW9714AF_Release(struct inode *a_pstInode, struct file *a_pstFile)
 		 * left the lens; from a close-up (600-870) that single step is
 		 * an audible knock. Walk down to 400 first at the ramp's own
 		 * rate, 50 codes per 20 ms.
+		 *
+		 * A lens without power fails each write only after an I2C
+		 * timeout of about 2 s, so stop at the first failure.
 		 */
 		spin_lock(g_pAF_SpinLock);
 		position = g_u4CurrPosition;
 		spin_unlock(g_pAF_SpinLock);
 		while (position > 450) {
 			position -= 50;
-			s4AF_SetPosition((u16)position);
+			if (s4AF_SetPosition((u16)position))
+				goto park_done;
 			msleep(20);
 		}
-		s4AF_SetPosition(400);
-		msleep(20);
-		s4AF_SetPosition(350);
-		msleep(20);
-		s4AF_SetPosition(300);
-		msleep(20);
-		s4AF_SetPosition(250);
-		msleep(20);
-		s4AF_SetPosition(200);
-		msleep(20);
-		s4AF_SetPosition(100);
-		msleep(20);
+		for (i = 0; i < ARRAY_SIZE(ramp); i++) {
+			if (s4AF_SetPosition(ramp[i]))
+				break;
+			msleep(20);
+		}
 	}
+park_done:
 
 	if (*g_pAF_Opened) {
 		LOG_INF("Free\n");
