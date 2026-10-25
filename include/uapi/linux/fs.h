@@ -187,6 +187,7 @@ struct inodes_stat_t {
 #define FS_NOCOMP_FL			0x00000400 /* Don't compress */
 #define FS_ECOMPR_FL			0x00000800 /* Compression error */
 /* End compression flags --- maybe not all used */
+#define FS_ENCRYPT_FL			0x00000800 /* Encrypted file */
 #define FS_BTREE_FL			0x00001000 /* btree format dir */
 #define FS_INDEX_FL			0x00001000 /* hash-indexed directory */
 #define FS_IMAGIC_FL			0x00002000 /* AFS directory */

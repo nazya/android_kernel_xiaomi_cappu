@@ -760,7 +760,8 @@ unsigned int last_cl2_online_cpus(unsigned int cpu)
 
 static int cpu_psci_cpu_kill(unsigned int cpu)
 {
-	int err, i;
+	int err;
+	unsigned long start, end;
 
 	if (!psci_ops.affinity_info)
 		return 1;
@@ -770,7 +771,9 @@ static int cpu_psci_cpu_kill(unsigned int cpu)
 	 * while it is dying. So, try again a few times.
 	 */
 
-	for (i = 0; i < 10; i++) {
+	start = jiffies;
+	end = start + msecs_to_jiffies(100);
+	do {
 #ifdef CONFIG_ARCH_MT6797
 #ifdef CONFIG_OCP_IDVFS_CTRL
 #ifdef CONFIG_MTK_CPU_HOTPLUG_DEBUG_3
@@ -827,7 +830,8 @@ static int cpu_psci_cpu_kill(unsigned int cpu)
 		if (err == PSCI_0_2_AFFINITY_LEVEL_OFF) {
 #ifndef CONFIG_ARCH_MT6797
 			aee_rr_rec_hotplug_footprint(cpu, 87);
-			pr_info("CPU%d killed.\n", cpu);
+			pr_info("CPU%d killed (polled %d ms)\n", cpu,
+				jiffies_to_msecs(jiffies - start));
 #endif
 #ifdef CONFIG_ARCH_MT6797
 
@@ -844,9 +848,8 @@ static int cpu_psci_cpu_kill(unsigned int cpu)
 		}
 
 		aee_rr_rec_hotplug_footprint(cpu, 88);
-		msleep(10);
-		pr_info("Retrying again to check for CPU kill\n");
-	}
+		usleep_range(100, 1000);
+	} while (time_before(jiffies, end));
 
 	aee_rr_rec_hotplug_footprint(cpu, 89);
 	pr_warn("CPU%d may not have shut down cleanly (AFFINITY_INFO reports %d)\n",
