@@ -1117,7 +1117,7 @@ int scsi_init_io(struct scsi_cmnd *cmd, gfp_t gfp_mask)
 	int error;
 
 	if (WARN_ON_ONCE(!rq->nr_phys_segments))
-		return -EINVAL;
+		return BLKPREP_KILL;
 
 	error = scsi_init_sgtable(rq, &cmd->sdb, gfp_mask);
 	if (error)
