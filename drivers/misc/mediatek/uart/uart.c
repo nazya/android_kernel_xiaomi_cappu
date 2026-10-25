@@ -2608,7 +2608,8 @@ static int mtk_uart_probe(struct platform_device *pdev)
 #endif
 
 #ifdef MTK_BCM_BT_LPM
-	mtk_uart_init_bt_lpm();
+	if (uart == bcm_bt_port)
+		mtk_uart_init_bt_lpm();
 #endif
 
 	return err;
