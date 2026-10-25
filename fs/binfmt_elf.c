@@ -525,7 +525,7 @@ static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
 	 */
 	if (padzero(elf_bss)) {
 		error = -EFAULT;
-		goto out;
+		goto out_close;
 	}
 	/*
 	 * Next, align both the file and mem bss up to the page size,
