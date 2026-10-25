@@ -789,11 +789,11 @@ static ssize_t show(struct kobject *kobj, struct attribute *attr, char *buf)
 	struct freq_attr *fattr = to_attr(attr);
 	ssize_t ret;
 
-	if (!down_read_trylock(&cpufreq_rwsem))
-		return -EINVAL;
-
 	if (!fattr->show)
 		return -EIO;
+
+	if (!down_read_trylock(&cpufreq_rwsem))
+		return -EINVAL;
 
 	down_read(&policy->rwsem);
 
