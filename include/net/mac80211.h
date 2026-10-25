@@ -1406,6 +1406,9 @@ struct ieee80211_sta_rates {
  * @supp_rates: Bitmap of supported rates (per band)
  * @ht_cap: HT capabilities of this STA; restricted to our own capabilities
  * @vht_cap: VHT capabilities of this STA; restricted to our own capabilities
+ * @max_rx_aggregation_subframes: maximal amount of frames in a single AMPDU
+ *	that this station is allowed to transmit to us.
+ *	Can be modified by driver.
  * @wme: indicates whether the STA supports QoS/WME.
  * @drv_priv: data area for driver use, will always be aligned to
  *	sizeof(void *), size is determined in hw information.
@@ -1427,6 +1430,7 @@ struct ieee80211_sta {
 	u16 aid;
 	struct ieee80211_sta_ht_cap ht_cap;
 	struct ieee80211_sta_vht_cap vht_cap;
+	u8 max_rx_aggregation_subframes;
 	bool wme;
 	u8 uapsd_queues;
 	u8 max_sp;
@@ -1602,6 +1606,12 @@ struct ieee80211_tx_control {
  *
  * @IEEE80211_SINGLE_HW_SCAN_ON_ALL_BANDS: The HW supports scanning on all bands
  *	in one command, mac80211 doesn't have to run separate scans per band.
+ *
+ * @IEEE80211_HW_NEEDS_UNIQUE_STA_ADDR: Hardware (or driver) requires that each
+ *	station has a unique address, i.e. each station entry can be identified
+ *	by just its MAC address; this prevents, for example, the same station
+ *	from connecting to two virtual AP interfaces at the same time.
+ *
  */
 enum ieee80211_hw_flags {
 	IEEE80211_HW_HAS_RATE_CONTROL			= 1<<0,
@@ -1634,6 +1644,7 @@ enum ieee80211_hw_flags {
 	IEEE80211_HW_CHANCTX_STA_CSA			= 1<<28,
 	IEEE80211_HW_SUPPORTS_CLONED_SKBS		= 1<<29,
 	IEEE80211_SINGLE_HW_SCAN_ON_ALL_BANDS		= 1<<30,
+	IEEE80211_HW_NEEDS_UNIQUE_STA_ADDR		= 1<<31,
 };
 
 /**
@@ -2632,9 +2643,11 @@ enum ieee80211_roc_type {
  * 	ieee80211_ampdu_mlme_action. Starting sequence number (@ssn)
  * 	is the first frame we expect to perform the action on. Notice
  * 	that TX/RX_STOP can pass NULL for this parameter.
- *	The @buf_size parameter is only valid when the action is set to
- *	%IEEE80211_AMPDU_TX_OPERATIONAL and indicates the peer's reorder
- *	buffer size (number of subframes) for this session -- the driver
+ *	The @buf_size parameter is valid only when the action is set to
+ *	%IEEE80211_AMPDU_RX_START or %IEEE80211_AMPDU_TX_OPERATIONAL and
+ *	indicates the reorder buffer size (number of subframes) for this
+ *	session.
+ *	When the action is set to %IEEE80211_AMPDU_TX_OPERATIONAL the driver
  *	may neither send aggregates containing more subframes than this
  *	nor send aggregates in a way that lost frames would exceed the
  *	buffer size. If just limiting the aggregate size, this would be

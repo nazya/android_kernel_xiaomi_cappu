@@ -630,7 +630,7 @@ int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (sk_acceptq_is_full(sk) && inet_csk_reqsk_queue_young(sk) > 1)
 		goto drop;
 
-	req = inet_reqsk_alloc(&dccp_request_sock_ops);
+	req = inet_reqsk_alloc(&dccp_request_sock_ops, sk);
 	if (req == NULL)
 		goto drop;
 
@@ -665,6 +665,7 @@ int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 		goto drop_and_free;
 
 	inet_csk_reqsk_queue_hash_add(sk, req, DCCP_TIMEOUT_INIT);
+	reqsk_free(req);
 	return 0;
 
 drop_and_free:

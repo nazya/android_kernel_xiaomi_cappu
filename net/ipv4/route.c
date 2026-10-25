@@ -267,6 +267,7 @@ static void *rt_cpu_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 		*pos = cpu+1;
 		return &per_cpu(rt_cache_stat, cpu);
 	}
+	(*pos)++;
 	return NULL;
 
 }
@@ -1284,7 +1285,7 @@ static unsigned int ipv4_mtu(const struct dst_entry *dst)
 	if (mtu)
 		return mtu;
 
-	mtu = dst->dev->mtu;
+	mtu = READ_ONCE(dst->dev->mtu);
 
 	if (unlikely(dst_metric_locked(dst, RTAX_MTU))) {
 		if (rt->rt_uses_gateway && mtu > 576)
@@ -2376,7 +2377,7 @@ struct dst_entry *ipv4_blackhole_route(struct net *net, struct dst_entry *dst_or
 }
 
 struct rtable *ip_route_output_flow(struct net *net, struct flowi4 *flp4,
-				    struct sock *sk)
+				    const struct sock *sk)
 {
 	struct rtable *rt = __ip_route_output_key(net, flp4);
 
@@ -2544,7 +2545,7 @@ static int inet_rtm_getroute(struct sk_buff *in_skb, struct nlmsghdr *nlh)
 	skb_reset_network_header(skb);
 
 	/* Bugfix: need to give ip_route_input enough of an IP header to not gag. */
-	ip_hdr(skb)->protocol = IPPROTO_ICMP;
+	ip_hdr(skb)->protocol = IPPROTO_UDP;
 	skb_reserve(skb, MAX_HEADER + sizeof(struct iphdr));
 
 	src = tb[RTA_SRC] ? nla_get_be32(tb[RTA_SRC]) : 0;

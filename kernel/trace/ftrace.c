@@ -2422,13 +2422,14 @@ static int ftrace_shutdown(struct ftrace_ops *ops, int command)
 
 	if (!command || !ftrace_enabled) {
 		/*
-		 * If these are control ops, they still need their
-		 * per_cpu field freed. Since, function tracing is
+		 * If these are dynamic or control ops, they still
+		 * need their data freed. Since, function tracing is
 		 * not currently active, we can just free them
 		 * without synchronizing all CPUs.
 		 */
-		if (ops->flags & FTRACE_OPS_FL_CONTROL)
-			control_ops_free(ops);
+		if (ops->flags & (FTRACE_OPS_FL_DYNAMIC | FTRACE_OPS_FL_CONTROL))
+			goto free_ops;
+
 		return 0;
 	}
 
@@ -2482,6 +2483,8 @@ static int ftrace_shutdown(struct ftrace_ops *ops, int command)
 	 */
 	if (ops->flags & (FTRACE_OPS_FL_DYNAMIC | FTRACE_OPS_FL_CONTROL)) {
 		schedule_on_each_cpu(ftrace_sync);
+
+ free_ops:
 
 		if (ops->flags & FTRACE_OPS_FL_CONTROL)
 			control_ops_free(ops);
@@ -2573,8 +2576,11 @@ static int referenced_filters(struct dyn_ftrace *rec)
 	int cnt = 0;
 
 	for (ops = ftrace_ops_list; ops != &ftrace_list_end; ops = ops->next) {
-		if (ops_references_rec(ops, rec))
-		    cnt++;
+		if (ops_references_rec(ops, rec)) {
+			cnt++;
+			if (ops->flags & FTRACE_OPS_FL_SAVE_REGS)
+				rec->flags |= FTRACE_FL_REGS;
+		}
 	}
 
 	return cnt;
@@ -2624,7 +2630,7 @@ static int ftrace_update_code(struct module *mod, struct ftrace_page *new_pgs)
 			p = &pg->records[i];
 			if (test)
 				cnt += referenced_filters(p);
-			p->flags = cnt;
+			p->flags += cnt;
 
 			/*
 			 * Do the initial record conversion from mcount jump

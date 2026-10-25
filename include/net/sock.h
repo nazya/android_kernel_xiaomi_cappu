@@ -756,6 +756,8 @@ static inline int sk_memalloc_socks(void)
 {
 	return static_key_false(&memalloc_socks);
 }
+
+void __receive_sock(struct file *file);
 #else
 
 static inline int sk_memalloc_socks(void)
@@ -763,6 +765,8 @@ static inline int sk_memalloc_socks(void)
 	return 0;
 }
 
+static inline void __receive_sock(struct file *file)
+{ }
 #endif
 
 static inline gfp_t sk_gfp_atomic(struct sock *sk, gfp_t gfp_mask)
@@ -1695,7 +1699,7 @@ static inline void sock_put(struct sock *sk)
 		sk_free(sk);
 }
 /* Generic version of sock_put(), dealing with all sockets
- * (TCP_TIMEWAIT, ESTABLISHED...)
+ * (TCP_TIMEWAIT, TCP_NEW_SYN_RECV, ESTABLISHED...)
  */
 void sock_gen_put(struct sock *sk);
 

@@ -2612,9 +2612,9 @@ static netdev_features_t harmonize_features(struct sk_buff *skb,
 	if (skb->ip_summed != CHECKSUM_NONE &&
 	    !can_checksum_protocol(features, type)) {
 		features &= ~NETIF_F_ALL_CSUM;
-	} else if (illegal_highdma(skb->dev, skb)) {
-		features &= ~NETIF_F_SG;
 	}
+	if (illegal_highdma(skb->dev, skb))
+		features &= ~NETIF_F_SG;
 
 	return features;
 }
@@ -4281,6 +4281,11 @@ struct packet_offload *gro_find_complete_by_type(__be16 type)
 }
 EXPORT_SYMBOL(gro_find_complete_by_type);
 
+static void napi_skb_free_stolen_head(struct sk_buff *skb)
+{
+	kmem_cache_free(skbuff_head_cache, skb);
+}
+
 static gro_result_t napi_skb_finish(gro_result_t ret, struct sk_buff *skb)
 {
 	switch (ret) {
@@ -4295,7 +4300,7 @@ static gro_result_t napi_skb_finish(gro_result_t ret, struct sk_buff *skb)
 
 	case GRO_MERGED_FREE:
 		if (NAPI_GRO_CB(skb)->free == NAPI_GRO_FREE_STOLEN_HEAD)
-			kmem_cache_free(skbuff_head_cache, skb);
+			napi_skb_free_stolen_head(skb);
 		else
 			__kfree_skb(skb);
 		break;
@@ -4367,8 +4372,14 @@ static gro_result_t napi_frags_finish(struct napi_struct *napi,
 		break;
 
 	case GRO_DROP:
-	case GRO_MERGED_FREE:
 		napi_reuse_skb(napi, skb);
+		break;
+
+	case GRO_MERGED_FREE:
+		if (NAPI_GRO_CB(skb)->free == NAPI_GRO_FREE_STOLEN_HEAD)
+			napi_skb_free_stolen_head(skb);
+		else
+			napi_reuse_skb(napi, skb);
 		break;
 
 	case GRO_MERGED:
@@ -4650,13 +4661,14 @@ void netif_napi_add(struct net_device *dev, struct napi_struct *napi,
 		pr_err_once("netif_napi_add() called with weight %d on device %s\n",
 			    weight, dev->name);
 	napi->weight = weight;
-	list_add(&napi->dev_list, &dev->napi_list);
 	napi->dev = dev;
 #ifdef CONFIG_NETPOLL
 	spin_lock_init(&napi->poll_lock);
 	napi->poll_owner = -1;
 #endif
 	set_bit(NAPI_STATE_SCHED, &napi->state);
+	set_bit(NAPI_STATE_NPSVC, &napi->state);
+	list_add_rcu(&napi->dev_list, &dev->napi_list);
 }
 EXPORT_SYMBOL(netif_napi_add);
 

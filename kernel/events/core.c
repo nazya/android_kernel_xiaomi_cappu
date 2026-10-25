@@ -4344,13 +4344,14 @@ static void perf_mmap_open(struct vm_area_struct *vma)
 static void perf_mmap_close(struct vm_area_struct *vma)
 {
 	struct perf_event *event = vma->vm_file->private_data;
-
 	struct ring_buffer *rb = ring_buffer_get(event);
 	struct user_struct *mmap_user = rb->mmap_user;
 	int mmap_locked = rb->mmap_locked;
 	unsigned long size = perf_data_size(rb);
+	bool detach_rest = false;
 
-	atomic_dec(&rb->mmap_count);
+	if (atomic_dec_and_test(&rb->mmap_count))
+		detach_rest = true;
 
 	if (!atomic_dec_and_mutex_lock(&event->mmap_count, &event->mmap_mutex))
 		goto out_put;
@@ -4359,7 +4360,7 @@ static void perf_mmap_close(struct vm_area_struct *vma)
 	mutex_unlock(&event->mmap_mutex);
 
 	/* If there's still other mmap()s of this buffer, we're done. */
-	if (atomic_read(&rb->mmap_count))
+	if (!detach_rest)
 		goto out_put;
 
 	/*
@@ -5611,6 +5612,27 @@ static void perf_event_mmap_event(struct perf_mmap_event *mmap_event)
 	char *buf = NULL;
 	char *name;
 
+	if (vma->vm_flags & VM_READ)
+		prot |= PROT_READ;
+	if (vma->vm_flags & VM_WRITE)
+		prot |= PROT_WRITE;
+	if (vma->vm_flags & VM_EXEC)
+		prot |= PROT_EXEC;
+
+	if (vma->vm_flags & VM_MAYSHARE)
+		flags = MAP_SHARED;
+	else
+		flags = MAP_PRIVATE;
+
+	if (vma->vm_flags & VM_DENYWRITE)
+		flags |= MAP_DENYWRITE;
+	if (vma->vm_flags & VM_MAYEXEC)
+		flags |= MAP_EXECUTABLE;
+	if (vma->vm_flags & VM_LOCKED)
+		flags |= MAP_LOCKED;
+	if (vma->vm_flags & VM_HUGETLB)
+		flags |= MAP_HUGETLB;
+
 	if (file) {
 		struct inode *inode;
 		dev_t dev;
@@ -5636,27 +5658,6 @@ static void perf_event_mmap_event(struct perf_mmap_event *mmap_event)
 		gen = inode->i_generation;
 		maj = MAJOR(dev);
 		min = MINOR(dev);
-
-		if (vma->vm_flags & VM_READ)
-			prot |= PROT_READ;
-		if (vma->vm_flags & VM_WRITE)
-			prot |= PROT_WRITE;
-		if (vma->vm_flags & VM_EXEC)
-			prot |= PROT_EXEC;
-
-		if (vma->vm_flags & VM_MAYSHARE)
-			flags = MAP_SHARED;
-		else
-			flags = MAP_PRIVATE;
-
-		if (vma->vm_flags & VM_DENYWRITE)
-			flags |= MAP_DENYWRITE;
-		if (vma->vm_flags & VM_MAYEXEC)
-			flags |= MAP_EXECUTABLE;
-		if (vma->vm_flags & VM_LOCKED)
-			flags |= MAP_LOCKED;
-		if (vma->vm_flags & VM_HUGETLB)
-			flags |= MAP_HUGETLB;
 
 		goto got_name;
 	} else {

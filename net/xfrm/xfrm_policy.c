@@ -1207,7 +1207,7 @@ static inline int policy_to_flow_dir(int dir)
 	}
 }
 
-static struct xfrm_policy *xfrm_sk_policy_lookup(struct sock *sk, int dir,
+static struct xfrm_policy *xfrm_sk_policy_lookup(const struct sock *sk, int dir,
 						 const struct flowi *fl, u16 family)
 {
 	struct xfrm_policy *pol;
@@ -1215,9 +1215,15 @@ static struct xfrm_policy *xfrm_sk_policy_lookup(struct sock *sk, int dir,
 
 	read_lock_bh(&net->xfrm.xfrm_policy_lock);
 	if ((pol = sk->sk_policy[dir]) != NULL) {
-		bool match = xfrm_selector_match(&pol->selector, fl, family);
+		bool match;
 		int err = 0;
 
+		if (pol->family != family) {
+			pol = NULL;
+			goto out;
+		}
+
+		match = xfrm_selector_match(&pol->selector, fl, family);
 		if (match) {
 			if ((sk->sk_mark & pol->mark.m) != pol->mark.v) {
 				pol = NULL;
@@ -2134,7 +2140,7 @@ static struct dst_entry *make_blackhole(struct net *net, u16 family,
  */
 struct dst_entry *xfrm_lookup(struct net *net, struct dst_entry *dst_orig,
 			      const struct flowi *fl,
-			      struct sock *sk, int flags)
+			      const struct sock *sk, int flags)
 {
 	struct xfrm_policy *pols[XFRM_POLICY_TYPE_MAX];
 	struct flow_cache_object *flo;
@@ -2282,7 +2288,7 @@ EXPORT_SYMBOL(xfrm_lookup);
  */
 struct dst_entry *xfrm_lookup_route(struct net *net, struct dst_entry *dst_orig,
 				    const struct flowi *fl,
-				    struct sock *sk, int flags)
+				    const struct sock *sk, int flags)
 {
 	struct dst_entry *dst = xfrm_lookup(net, dst_orig, fl, sk,
 					    flags | XFRM_LOOKUP_QUEUE |
