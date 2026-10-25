@@ -98,9 +98,6 @@ static void acc_work_func(struct work_struct *work)
 		ACC_PR_ERR("get acc data fails!!\n");
 		goto acc_loop;
 	} else {
-			if (0 == x && 0 == y && 0 == z)
-				goto acc_loop;
-
 			cxt->drv_data.x = x;
 			cxt->drv_data.y = y;
 			cxt->drv_data.z = z;
@@ -108,17 +105,6 @@ static void acc_work_func(struct work_struct *work)
 			cxt->drv_data.timestamp = getCurNS();
 	}
 
-	if (true == cxt->is_first_data_after_enable) {
-		cxt->is_first_data_after_enable = false;
-		/* filter -1 value */
-		if (cxt->drv_data.x == ACC_INVALID_VALUE ||
-		    cxt->drv_data.y == ACC_INVALID_VALUE ||
-		    cxt->drv_data.z == ACC_INVALID_VALUE) {
-			ACC_LOG(" read invalid data\n");
-			goto acc_loop;
-
-		}
-	}
 	/* report data to input device */
 	/* printk("new acc work run....\n"); */
 	/* ACC_LOG("acc data[%d,%d,%d]\n" ,cxt->drv_data.acc_data.values[0], */
@@ -166,7 +152,6 @@ static struct acc_context *acc_context_alloc_object(void)
 	initTimer(&obj->hrTimer, acc_poll);
 	obj->is_active_nodata = false;
 	obj->is_active_data = false;
-	obj->is_first_data_after_enable = false;
 	obj->is_polling_run = false;
 	mutex_init(&obj->acc_op_mutex);
 	obj->is_batch_enable = false;/* for batch mode init */
@@ -195,9 +180,6 @@ static int acc_enable_and_batch(void)
 		stopTimer(&cxt->hrTimer);
 		cancel_work_sync(&cxt->report);
 		stopTimer(&cxt->hrTimer);
-		cxt->drv_data.x = ACC_INVALID_VALUE;
-		cxt->drv_data.y = ACC_INVALID_VALUE;
-		cxt->drv_data.z = ACC_INVALID_VALUE;
 		ACC_LOG("acc stop polling done\n");
 	}
 
@@ -258,7 +240,6 @@ static int acc_enable_and_batch(void)
 			atomic_set(&cxt->delay, (int)mdelay);
 			/* the first sensor start polling timer */
 			if (!READ_ONCE(cxt->is_polling_run)) {
-				cxt->is_first_data_after_enable = true;
 				WRITE_ONCE(cxt->is_polling_run, true);
 				startTimer(&cxt->hrTimer, atomic_read(&cxt->delay), true);
 			}

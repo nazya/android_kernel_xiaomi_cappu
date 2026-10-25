@@ -55,7 +55,6 @@
 #define OP_GYRO_DELAY	0X01
 #define	OP_GYRO_ENABLE	0X02
 #define	OP_GYRO_GET_DATA	0X04
-#define GYRO_INVALID_VALUE -1
 #define EVENT_TYPE_GYRO_X			ABS_X
 #define EVENT_TYPE_GYRO_Y			ABS_Y
 #define EVENT_TYPE_GYRO_Z			ABS_Z
@@ -138,7 +137,6 @@ struct gyro_context {
 	struct gyro_data_path   gyro_data;
 	bool is_active_nodata;		/*Active, but HAL don't need data sensor. such as orientation need*/
 	bool is_active_data;		/* Active and HAL need data .*/
-	bool is_first_data_after_enable;
 	bool is_polling_run;
 	bool is_batch_enable;
 	int power;

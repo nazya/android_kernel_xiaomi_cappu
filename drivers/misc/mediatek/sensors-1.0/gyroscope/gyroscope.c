@@ -106,17 +106,6 @@ static void gyro_work_func(struct work_struct *work)
 		cxt->drv_data.timestamp = getCurNS();
 	 }
 
-	if (true ==  cxt->is_first_data_after_enable) {
-		cxt->is_first_data_after_enable = false;
-		/* filter -1 value */
-		if (cxt->drv_data.x == GYRO_INVALID_VALUE ||
-		    cxt->drv_data.y == GYRO_INVALID_VALUE ||
-		    cxt->drv_data.z == GYRO_INVALID_VALUE) {
-			GYRO_LOG(" read invalid data\n");
-			goto gyro_loop;
-		}
-	}
-
 	/* GYRO_LOG("gyro data[%d,%d,%d]\n" ,cxt->drv_data.gyro_data.values[0], */
 	/* cxt->drv_data.gyro_data.values[1],cxt->drv_data.gyro_data.values[2]); */
 
@@ -162,7 +151,6 @@ static struct gyro_context *gyro_context_alloc_object(void)
 	initTimer(&obj->hrTimer, gyro_poll);
 	obj->is_active_nodata = false;
 	obj->is_active_data = false;
-	obj->is_first_data_after_enable = false;
 	obj->is_polling_run = false;
 	obj->is_batch_enable = false;
 	obj->cali_sw[GYRO_AXIS_X] = 0;
@@ -191,9 +179,6 @@ static int gyro_enable_and_batch(void)
 		stopTimer(&cxt->hrTimer);
 		cancel_work_sync(&cxt->report);
 		stopTimer(&cxt->hrTimer);
-		cxt->drv_data.x = GYRO_INVALID_VALUE;
-		cxt->drv_data.y = GYRO_INVALID_VALUE;
-		cxt->drv_data.z = GYRO_INVALID_VALUE;
 		GYRO_LOG("gyro stop polling done\n");
 	}
 
@@ -254,7 +239,6 @@ static int gyro_enable_and_batch(void)
 			atomic_set(&cxt->delay, (int)mdelay);
 			/* the first sensor start polling timer */
 			if (!READ_ONCE(cxt->is_polling_run)) {
-				cxt->is_first_data_after_enable = true;
 				WRITE_ONCE(cxt->is_polling_run, true);
 				startTimer(&cxt->hrTimer, atomic_read(&cxt->delay), true);
 			}

@@ -49,8 +49,6 @@
 #define	OP_ACC_ENABLE	0X02
 #define	OP_ACC_GET_DATA	0X04
 
-#define ACC_INVALID_VALUE -1
-
 #define ACC_AXIS_X 0
 #define ACC_AXIS_Y 1
 #define ACC_AXIS_Z 2
@@ -121,7 +119,6 @@ struct acc_context {
 	/* Active, but HAL don't need data sensor. such as orientation need */
 	bool			is_active_nodata;
 	bool			is_active_data;		/* Active and HAL need data . */
-	bool is_first_data_after_enable;
 	bool is_polling_run;
 	bool is_batch_enable;	/* version2.this is used for judging whether sensor is in batch mode */
 	int power;
