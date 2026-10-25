@@ -366,38 +366,6 @@ static int step_c_real_enable(int enable)
 }
 
 
-static int floor_c_real_enable(int enable)
-{
-	int err = 0;
-	struct step_c_context *cxt = NULL;
-
-	cxt = step_c_context_obj;
-	if (enable == 1) {
-		err = cxt->step_c_ctl.enable_floor_c(1);
-		if (err) {
-			err = cxt->step_c_ctl.enable_floor_c(1);
-			if (err) {
-				err = cxt->step_c_ctl.enable_floor_c(1);
-				if (err)
-					STEP_C_PR_ERR("floor_c enable(%d) err 3 timers = %d\n",
-						   enable, err);
-			}
-		}
-		STEP_C_LOG("floor_c real enable\n");
-	}
-	if (enable == 0) {
-		err = cxt->step_c_ctl.enable_floor_c(0);
-		if (err)
-			STEP_C_PR_ERR("floor_c enable(%d) err = %d\n", enable, err);
-		STEP_C_LOG("floor_c real disable\n");
-
-	}
-
-	return err;
-}
-
-
-
 static int step_c_enable_data(int enable)
 {
 	struct step_c_context *cxt = NULL;
@@ -438,44 +406,6 @@ static int step_c_enable_data(int enable)
 	step_c_real_enable(enable);
 	return 0;
 }
-
-
-static int floor_c_enable_data(int enable)
-{
-	struct step_c_context *cxt = NULL;
-
-	cxt = step_c_context_obj;
-
-	if (enable == 1) {
-		STEP_C_LOG("FLOOR_C enable data\n");
-		cxt->is_floor_c_active_data = true;
-		cxt->is_first_floor_c_data_after_enable = true;
-		floor_c_real_enable(1);
-		if (false == cxt->is_polling_run && cxt->is_step_c_batch_enable == false) {
-			if (false == cxt->step_c_ctl.is_report_input_direct) {
-				mod_timer(&cxt->timer,
-					  jiffies + atomic_read(&cxt->delay) / (1000 / HZ));
-				cxt->is_polling_run = true;
-			}
-		}
-	}
-	if (enable == 0) {
-		STEP_C_LOG("FLOOR_C disable\n");
-		cxt->is_floor_c_active_data = false;
-		floor_c_real_enable(0);
-		if (true == cxt->is_polling_run) {
-			if (false == cxt->step_c_ctl.is_report_input_direct) {
-				cxt->is_polling_run = false;
-				del_timer_sync(&cxt->timer);
-				cancel_work_sync(&cxt->report);
-				cxt->drv_data.floor_counter = STEP_C_INVALID_VALUE;
-			}
-		}
-
-	}
-	return 0;
-}
-
 
 
 int step_c_enable_nodata(int enable)
@@ -581,14 +511,6 @@ static ssize_t step_c_store_active(struct device *dev, struct device_attribute *
 			res = significant_real_enable(1);
 		else if (0 == en)
 			res = significant_real_enable(0);
-		else
-			res = -EINVAL;
-		break;
-	case ID_FLOOR_COUNTER:
-		if (en == 1)
-			res = floor_c_enable_data(1);
-		else if (en == 0)
-			res = floor_c_enable_data(0);
 		else
 			res = -EINVAL;
 		break;
