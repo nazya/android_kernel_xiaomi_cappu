@@ -308,11 +308,16 @@ static int usb_parse_endpoint(struct device *ddev, int cfgno, int inum,
 		endpoint->desc.bInterval = n;
 	}
 
-	if (usb_endpoint_maxp(&endpoint->desc) == 0) {
-		dev_warn(ddev, "config %d interface %d altsetting %d endpoint 0x%X has wMaxPacketSize 0, skipping\n",
+	/*
+	 * Validate the wMaxPacketSize field.
+	 * Some devices have isochronous endpoints in altsetting 0;
+	 * the USB-2 spec requires such endpoints to have wMaxPacketSize = 0
+	 * (see the end of section 5.6.3), so don't warn about them.
+	 */
+	if (usb_endpoint_maxp(&endpoint->desc) == 0 &&
+	    !(usb_endpoint_xfer_isoc(d) && asnum == 0))
+		dev_warn(ddev, "config %d interface %d altsetting %d endpoint 0x%X has invalid wMaxPacketSize 0\n",
 		    cfgno, inum, asnum, d->bEndpointAddress);
-		goto skip_to_next_endpoint_or_interface_descriptor;
-	}
 
 	/* Some buggy low-speed devices have Bulk endpoints, which is
 	 * explicitly forbidden by the USB spec.  In an attempt to make
