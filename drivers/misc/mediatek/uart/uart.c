@@ -854,6 +854,8 @@ static int  mtk_uart_init_bt_lpm(void)
 		return ret;
 	}
 	gpio_set_value(bt_lpm_pdata.bt_host_wake_gpio, 0);
+	/* mtk_uart_suspend() enables it as a wake source; keep it off until then */
+	irq_set_status_flags(bt_lpm_pdata.bt_host_wake_irq, IRQ_NOAUTOEN);
 	ret = request_threaded_irq(bt_lpm_pdata.bt_host_wake_irq, NULL,
 			bluetooth_hostwake_irq_handler,
 			IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
