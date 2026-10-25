@@ -376,6 +376,11 @@ int __tty_insert_flip_char(struct tty_port *port, unsigned char ch, char flag)
 }
 EXPORT_SYMBOL(__tty_insert_flip_char);
 
+static inline void tty_flip_buffer_commit(struct tty_buffer *tail)
+{
+	tail->commit = tail->used;
+}
+
 /**
  *	tty_schedule_flip	-	push characters to ldisc
  *	@port: tty port to push from
@@ -389,10 +394,38 @@ void tty_schedule_flip(struct tty_port *port)
 {
 	struct tty_bufhead *buf = &port->buf;
 
-	buf->tail->commit = buf->tail->used;
+	tty_flip_buffer_commit(buf->tail);
 	schedule_work(&buf->work);
 }
 EXPORT_SYMBOL(tty_schedule_flip);
+
+/**
+ *	tty_insert_flip_string_and_push_buffer - add characters and push
+ *	@port: tty port
+ *	@chars: characters
+ *	@size: size
+ *
+ *	Combines tty_insert_flip_string() and tty_flip_buffer_push(), but
+ *	inserts and commits the data under @port->lock. For pty only.
+ *
+ *	Returns the number of characters added.
+ */
+int tty_insert_flip_string_and_push_buffer(struct tty_port *port,
+		const unsigned char *chars, size_t size)
+{
+	struct tty_bufhead *buf = &port->buf;
+	unsigned long flags;
+
+	spin_lock_irqsave(&port->lock, flags);
+	size = tty_insert_flip_string(port, chars, size);
+	if (size)
+		tty_flip_buffer_commit(buf->tail);
+	spin_unlock_irqrestore(&port->lock, flags);
+
+	schedule_work(&buf->work);
+
+	return size;
+}
 
 /**
  *	tty_prepare_flip_string		-	make room for characters
