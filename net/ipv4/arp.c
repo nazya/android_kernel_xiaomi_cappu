@@ -906,7 +906,7 @@ static int arp_process(struct sk_buff *skb)
 		   It is possible, that this option should be enabled for some
 		   devices (strip is candidate)
 		 */
-		is_garp = tip == sip && addr_type == RTN_UNICAST;
+		is_garp = tip == sip && inet_addr_type(net, sip) == RTN_UNICAST;
 
 		/* Unsolicited ARP _replies_ also require target hwaddr to be
 		 * the same as source.
