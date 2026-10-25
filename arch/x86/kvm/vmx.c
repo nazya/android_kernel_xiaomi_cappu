@@ -46,7 +46,7 @@
 #include <asm/perf_event.h>
 #include <asm/debugreg.h>
 #include <asm/kexec.h>
-#include <asm/nospec-branch.h>
+#include <asm/spec-ctrl.h>
 
 #include "trace.h"
 
@@ -5042,6 +5042,7 @@ static int handle_external_interrupt(struct kvm_vcpu *vcpu)
 static int handle_triple_fault(struct kvm_vcpu *vcpu)
 {
 	vcpu->run->exit_reason = KVM_EXIT_SHUTDOWN;
+	vcpu->mmio_needed = 0;
 	return 0;
 }
 
@@ -5695,8 +5696,23 @@ static int handle_ept_misconfig(struct kvm_vcpu *vcpu)
 
 	gpa = vmcs_read64(GUEST_PHYSICAL_ADDRESS);
 	if (!kvm_io_bus_write(vcpu->kvm, KVM_FAST_MMIO_BUS, gpa, 0, NULL)) {
-		skip_emulated_instruction(vcpu);
-		return 1;
+		/*
+		* Doing kvm_skip_emulated_instruction() depends on undefined
+		* behavior: Intel's manual doesn't mandate
+		* VM_EXIT_INSTRUCTION_LEN to be set in VMCS when EPT MISCONFIG
+		* occurs and while on real hardware it was observed to be set,
+		* other hypervisors (namely Hyper-V) don't set it, we end up
+		* advancing IP with some random value. Disable fast mmio when
+		* running nested and keep it for real hardware in hope that
+		* VM_EXIT_INSTRUCTION_LEN will always be set correctly.
+		*/
+		if (!static_cpu_has(X86_FEATURE_HYPERVISOR)) {
+			skip_emulated_instruction(vcpu);
+			return 1;
+		}
+		else
+			return x86_emulate_instruction(vcpu, gpa, EMULTYPE_SKIP,
+						       NULL, 0) == EMULATE_DONE;
 	}
 
 	ret = handle_mmio_page_fault_common(vcpu, gpa, true);
@@ -6074,6 +6090,10 @@ static int get_vmx_mem_address(struct kvm_vcpu *vcpu,
 	/* Addr = segment_base + offset */
 	/* offset = base + [index * scale] + displacement */
 	*ret = vmx_get_segment_base(vcpu, seg_reg);
+	if (addr_size == 1)
+		off = (gva_t)sign_extend64(off, 31);
+	else if (addr_size == 0)
+		off = (gva_t)sign_extend64(off, 15);
 	if (base_is_valid)
 		*ret += kvm_register_read(vcpu, base_reg);
 	if (index_is_valid)

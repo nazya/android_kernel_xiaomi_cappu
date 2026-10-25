@@ -767,6 +767,7 @@ static ssize_t environ_read(struct file *file, char __user *buf,
 	unsigned long src = *ppos;
 	int ret = 0;
 	struct mm_struct *mm = file->private_data;
+	unsigned long env_start, env_end;
 
 	/* Ensure the process spawned far enough to have an environment. */
 	if (!mm || !mm->env_end)
@@ -779,19 +780,25 @@ static ssize_t environ_read(struct file *file, char __user *buf,
 	ret = 0;
 	if (!atomic_inc_not_zero(&mm->mm_users))
 		goto free;
+
+	down_read(&mm->mmap_sem);
+	env_start = mm->env_start;
+	env_end = mm->env_end;
+	up_read(&mm->mmap_sem);
+
 	while (count > 0) {
 		size_t this_len, max_len;
 		int retval;
 
-		if (src >= (mm->env_end - mm->env_start))
+		if (src >= (env_end - env_start))
 			break;
 
-		this_len = mm->env_end - (mm->env_start + src);
+		this_len = env_end - (env_start + src);
 
 		max_len = min_t(size_t, PAGE_SIZE, count);
 		this_len = min(max_len, this_len);
 
-		retval = access_remote_vm(mm, (mm->env_start + src),
+		retval = access_remote_vm(mm, (env_start + src),
 			page, this_len, 0);
 
 		if (retval <= 0) {
@@ -2169,6 +2176,13 @@ out:
 }
 
 #ifdef CONFIG_SECURITY
+static int proc_pid_attr_open(struct inode *inode, struct file *file)
+{
+	file->private_data = NULL;
+	__mem_open(inode, file, PTRACE_MODE_READ_FSCREDS);
+	return 0;
+}
+
 static ssize_t proc_pid_attr_read(struct file * file, char __user * buf,
 				  size_t count, loff_t *ppos)
 {
@@ -2197,6 +2211,10 @@ static ssize_t proc_pid_attr_write(struct file * file, const char __user * buf,
 	char *page;
 	ssize_t length;
 	struct task_struct *task = get_proc_task(inode);
+
+	/* A task may only write when it was the opener. */
+	if (file->private_data != current->mm)
+		return -EPERM;
 
 	length = -ESRCH;
 	if (!task)
@@ -2236,9 +2254,11 @@ out_no_task:
 }
 
 static const struct file_operations proc_pid_attr_operations = {
+	.open		= proc_pid_attr_open,
 	.read		= proc_pid_attr_read,
 	.write		= proc_pid_attr_write,
 	.llseek		= generic_file_llseek,
+	.release	= mem_release,
 };
 
 static const struct pid_entry attr_dir_stuff[] = {

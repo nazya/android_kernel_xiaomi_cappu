@@ -258,6 +258,10 @@ struct tty_struct {
 	struct termiox *termiox;	/* May be NULL for unsupported */
 	char name[64];
 	struct pid *pgrp;		/* Protected by ctrl lock */
+	/*
+	 * Writes protected by both ctrl lock and legacy mutex, readers must use
+	 * at least one of them.
+	 */
 	struct pid *session;
 	unsigned long flags;
 	int count;
@@ -566,7 +570,7 @@ extern int tty_unregister_ldisc(int disc);
 extern int tty_set_ldisc(struct tty_struct *tty, int ldisc);
 extern int tty_ldisc_setup(struct tty_struct *tty, struct tty_struct *o_tty);
 extern void tty_ldisc_release(struct tty_struct *tty, struct tty_struct *o_tty);
-extern void tty_ldisc_init(struct tty_struct *tty);
+extern int __must_check tty_ldisc_init(struct tty_struct *tty);
 extern void tty_ldisc_deinit(struct tty_struct *tty);
 extern void tty_ldisc_begin(void);
 

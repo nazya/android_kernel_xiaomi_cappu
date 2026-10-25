@@ -43,6 +43,8 @@
 #include <linux/sysctl.h>
 #include <linux/module.h>
 
+#include <linux/nospec.h>
+
 #include <rdma/rdma_user_cm.h>
 #include <rdma/ib_marshall.h>
 #include <rdma/rdma_cm.h>
@@ -576,7 +578,7 @@ static ssize_t ucma_resolve_ip(struct ucma_file *file,
 	if (copy_from_user(&cmd, inbuf, sizeof(cmd)))
 		return -EFAULT;
 
-	if (!rdma_addr_size_in6(&cmd.src_addr) ||
+	if ((cmd.src_addr.sin6_family && !rdma_addr_size_in6(&cmd.src_addr)) ||
 	    !rdma_addr_size_in6(&cmd.dst_addr))
 		return -EINVAL;
 
@@ -1144,6 +1146,9 @@ static int ucma_set_ib_path(struct ucma_context *ctx,
 	if (!optlen)
 		return -EINVAL;
 
+	if (!ctx->cm_id->device)
+		return -EINVAL;
+
 	memset(&sa_path, 0, sizeof(sa_path));
 	sa_path.vlan_id = 0xffff;
 
@@ -1210,7 +1215,7 @@ static ssize_t ucma_set_option(struct ucma_file *file, const char __user *inbuf,
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
 
-	if (unlikely(cmd.optval > KMALLOC_MAX_SIZE))
+	if (unlikely(cmd.optlen > KMALLOC_MAX_SIZE))
 		return -EINVAL;
 
 	optval = memdup_user((void __user *) (unsigned long) cmd.optval,
@@ -1540,6 +1545,7 @@ static ssize_t ucma_write(struct file *filp, const char __user *buf,
 
 	if (hdr.cmd >= ARRAY_SIZE(ucma_cmd_table))
 		return -EINVAL;
+	hdr.cmd = array_index_nospec(hdr.cmd, ARRAY_SIZE(ucma_cmd_table));
 
 	if (hdr.in + sizeof(hdr) > len)
 		return -EINVAL;

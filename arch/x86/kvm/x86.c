@@ -5407,7 +5407,8 @@ int x86_emulate_instruction(struct kvm_vcpu *vcpu,
 		 * handle watchpoints yet, those would be handled in
 		 * the emulate_ops.
 		 */
-		if (kvm_vcpu_check_breakpoint(vcpu, &r))
+		if (!(emulation_type & EMULTYPE_SKIP) &&
+		    kvm_vcpu_check_breakpoint(vcpu, &r))
 			return r;
 
 		ctxt->interruptibility = 0;
@@ -5502,8 +5503,7 @@ restart:
 		toggle_interruptibility(vcpu, ctxt->interruptibility);
 		vcpu->arch.emulate_regs_need_sync_to_vcpu = false;
 		kvm_rip_write(vcpu, ctxt->eip);
-		if (r == EMULATE_DONE &&
-		    (ctxt->tf || (vcpu->guest_debug & KVM_GUESTDBG_SINGLESTEP)))
+		if (r == EMULATE_DONE && ctxt->tf)
 			kvm_vcpu_do_singlestep(vcpu, &r);
 		__kvm_set_rflags(vcpu, ctxt->eflags);
 
@@ -5879,6 +5879,7 @@ void kvm_arch_exit(void)
 	unregister_hotcpu_notifier(&kvmclock_cpu_notifier_block);
 #ifdef CONFIG_X86_64
 	pvclock_gtod_unregister_notifier(&pvclock_gtod_notifier);
+	cancel_work_sync(&pvclock_gtod_work);
 #endif
 	kvm_x86_ops = NULL;
 	kvm_mmu_module_exit();
@@ -6264,6 +6265,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		}
 		if (kvm_check_request(KVM_REQ_TRIPLE_FAULT, vcpu)) {
 			vcpu->run->exit_reason = KVM_EXIT_SHUTDOWN;
+			vcpu->mmio_needed = 0;
 			r = 0;
 			goto out;
 		}

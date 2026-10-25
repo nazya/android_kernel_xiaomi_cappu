@@ -560,7 +560,7 @@ static void gs_rx_push(unsigned long _port)
 			skip += req->actual;
 
 		/* push data to (open) tty */
-		if (req->actual) {
+		if (req->actual && tty) {
 			char		*packet = req->buf;
 			unsigned	size = req->actual;
 			unsigned	n;
