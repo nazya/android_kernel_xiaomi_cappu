@@ -3663,7 +3663,7 @@ static int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
 		struct page *page = NULL;
 
 		ret = get_user_pages(tsk, mm, addr, 1,
-				gup_flags, 1, &page, &vma);
+				write, 1, &page, &vma);
 		if (ret <= 0) {
 #ifdef CONFIG_MTK_EXTMEM
 			if (!write) {
