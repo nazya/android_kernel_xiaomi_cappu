@@ -1419,14 +1419,6 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	if (dev->power.syscore)
 		goto Complete;
 
-	data.dev = dev;
-	data.tsk = get_current();
-	init_timer_on_stack(&timer);
-	timer.expires = jiffies + HZ * 12;
-	timer.function = dpm_drv_timeout;
-	timer.data = (unsigned long)&data;
-	add_timer(&timer);
-
 	/* Avoid direct_complete to let wakeup_path propagate. */
 	if (device_may_wakeup(dev) || dev->power.wakeup_path)
 		dev->power.direct_complete = false;
@@ -1441,6 +1433,14 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		}
 		dev->power.direct_complete = false;
 	}
+
+	data.dev = dev;
+	data.tsk = get_current();
+	init_timer_on_stack(&timer);
+	timer.expires = jiffies + HZ * 12;
+	timer.function = dpm_drv_timeout;
+	timer.data = (unsigned long)&data;
+	add_timer(&timer);
 
 	dpm_watchdog_set(&wd, dev);
 	device_lock(dev);
