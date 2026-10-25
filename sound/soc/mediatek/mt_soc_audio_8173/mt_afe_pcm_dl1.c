@@ -55,6 +55,7 @@ static pid_t pid_old;
  *    function implementation
  */
 static int mt_pcm_dl1_close(struct snd_pcm_substream *substream);
+static int mt_pcm_dl1_hw_free(struct snd_pcm_substream *substream);
 static int mt_pcm_dl1_prestart(struct snd_pcm_substream *substream);
 static int mt_pcm_dl1_post_stop(struct snd_pcm_substream *substream);
 
@@ -160,6 +161,13 @@ static int mt_pcm_dl1_hw_params(struct snd_pcm_substream *substream,
 
 	pr_debug("%s\n", __func__);
 
+	/*
+	 * hw_params may be called again without hw_free. Release the DRAM
+	 * buffer of the previous call, which the SRAM branch below would
+	 * leak and the DRAM branch would take the EMI clock for twice.
+	 */
+	mt_pcm_dl1_hw_free(substream);
+
 	dma_buf->dev.type = SNDRV_DMA_TYPE_DEV;
 	dma_buf->dev.dev = substream->pcm->card->dev;
 	dma_buf->private_data = NULL;
@@ -181,7 +189,8 @@ static int mt_pcm_dl1_hw_params(struct snd_pcm_substream *substream,
 		substream->runtime->dma_addr = mt_afe_get_sram_phy_addr();
 	} else {
 		ret = snd_pcm_lib_malloc_pages(substream, buffer_size);
-		mt_afe_emi_clk_on();
+		if (ret >= 0)
+			mt_afe_emi_clk_on();
 	}
 
 	if (ret >= 0)
