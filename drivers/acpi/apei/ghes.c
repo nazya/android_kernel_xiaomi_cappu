@@ -229,7 +229,7 @@ static int ghes_estatus_pool_expand(unsigned long len)
 	 * New allocation must be visible in all pgd before it can be found by
 	 * an NMI allocating from the pool.
 	 */
-	vmalloc_sync_all();
+	vmalloc_sync_mappings();
 
 	return gen_pool_add(ghes_estatus_pool, addr, PAGE_ALIGN(len), -1);
 }
@@ -657,7 +657,7 @@ static int ghes_proc(struct ghes *ghes)
 	ghes_do_proc(ghes, ghes->estatus);
 out:
 	ghes_clear_estatus(ghes);
-	return 0;
+	return rc;
 }
 
 static void ghes_add_timer(struct ghes *ghes)

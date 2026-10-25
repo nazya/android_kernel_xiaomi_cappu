@@ -1346,12 +1346,10 @@ static int mass_storage_function_init(struct android_usb_function *f,
 	/* SYSFS create */
 	fsg_sysfs_update(fsg_opts->common, f->dev, true);
 
-	/* invoke thread */
-	ret = fsg_common_run_thread(fsg_opts->common);
-	if (ret)
-		return ret;
-
-	/* setup this to avoid create fsg thread in fsg_bind again */
+	/*
+	 * The common is set up here, so fsg_bind() must not set it up again.
+	 * fsg_bind() starts the thread when it is not running yet.
+	 */
 	fsg_opts->no_configfs = true;
 
 	return 0;
@@ -1388,7 +1386,7 @@ static int mass_storage_function_bind_config(struct android_usb_function *f,
 	struct mass_storage_function_config *config = f->config;
 	int ret = 0;
 
-	/* no_configfs :true, make fsg_bind skip for creating fsg thread */
+	/* no_configfs: true, fsg_bind() keeps the common set up at init */
 	ret = usb_add_function(c, config->f_ms);
 	if (ret)
 		pr_err("Could not bind config\n");

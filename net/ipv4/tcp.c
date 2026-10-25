@@ -282,6 +282,7 @@
 
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
+#include <asm/unaligned.h>
 #include <net/busy_poll.h>
 
 int sysctl_tcp_fin_timeout __read_mostly = TCP_FIN_TIMEOUT;
@@ -2627,10 +2628,7 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 
 #ifdef CONFIG_TCP_MD5SIG
 	case TCP_MD5SIG:
-		if ((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_LISTEN))
-			err = tp->af_specific->md5_parse(sk, optval, optlen);
-		else
-			err = -EINVAL;
+		err = tp->af_specific->md5_parse(sk, optval, optlen);
 		break;
 #endif
 	case TCP_USER_TIMEOUT:
@@ -2702,6 +2700,7 @@ void tcp_get_info(const struct sock *sk, struct tcp_info *info)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	u32 now = tcp_time_stamp;
+	u64 rate64;
 	u32 rate;
 
 	memset(info, 0, sizeof(*info));
@@ -2764,10 +2763,12 @@ void tcp_get_info(const struct sock *sk, struct tcp_info *info)
 	info->tcpi_total_retrans = tp->total_retrans;
 
 	rate = READ_ONCE(sk->sk_pacing_rate);
-	info->tcpi_pacing_rate = rate != ~0U ? rate : ~0ULL;
+	rate64 = rate != ~0U ? rate : ~0ULL;
+	put_unaligned(rate64, &info->tcpi_pacing_rate);
 
 	rate = READ_ONCE(sk->sk_max_pacing_rate);
-	info->tcpi_max_pacing_rate = rate != ~0U ? rate : ~0ULL;
+	rate64 = rate != ~0U ? rate : ~0ULL;
+	put_unaligned(rate64, &info->tcpi_max_pacing_rate);
 }
 EXPORT_SYMBOL_GPL(tcp_get_info);
 
@@ -3051,9 +3052,12 @@ EXPORT_SYMBOL(tcp_md5_hash_skb_data);
 
 int tcp_md5_hash_key(struct tcp_md5sig_pool *hp, const struct tcp_md5sig_key *key)
 {
+	u8 keylen = READ_ONCE(key->keylen); /* paired with WRITE_ONCE() in tcp_md5_do_add */
 	struct scatterlist sg;
 
-	sg_init_one(&sg, key->key, key->keylen);
+	sg_init_one(&sg, key->key, keylen);
+
+	/* tcp_md5_do_add() might change key->key under us */
 	return crypto_hash_update(&hp->md5_desc, &sg, key->keylen);
 }
 EXPORT_SYMBOL(tcp_md5_hash_key);

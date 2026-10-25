@@ -1646,3 +1646,16 @@ extern void lock_timekeeper(void);
 extern void print_rt_rq(struct seq_file *m, int cpu, struct rt_rq *rt_rq);
 #endif /* CONFIG_SCHED_DEBUG */
 extern void unthrottle_offline_rt_rqs(struct rq *rq);
+
+static inline void account_reset_rq(struct rq *rq)
+{
+#ifdef CONFIG_IRQ_TIME_ACCOUNTING
+	rq->prev_irq_time = 0;
+#endif
+#ifdef CONFIG_PARAVIRT
+	rq->prev_steal_time = 0;
+#endif
+#ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+	rq->prev_steal_time_rq = 0;
+#endif
+}

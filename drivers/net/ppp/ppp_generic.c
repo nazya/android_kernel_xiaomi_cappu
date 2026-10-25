@@ -2759,6 +2759,7 @@ ppp_create_interface(struct net *net, int unit, int *retp)
 
 out2:
 	mutex_unlock(&pn->all_ppp_mutex);
+	rtnl_unlock();
 	free_netdev(dev);
 out1:
 	*retp = ret;

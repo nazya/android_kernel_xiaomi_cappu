@@ -97,7 +97,7 @@ int platform_get_irq(struct platform_device *dev, unsigned int num)
 		int ret;
 
 		ret = of_irq_get(dev->dev.of_node, num);
-		if (ret >= 0 || ret == -EPROBE_DEFER)
+		if (ret > 0 || ret == -EPROBE_DEFER)
 			return ret;
 	}
 
@@ -155,7 +155,7 @@ int platform_get_irq_byname(struct platform_device *dev, const char *name)
 		int ret;
 
 		ret = of_irq_get_byname(dev->dev.of_node, name);
-		if (ret >= 0 || ret == -EPROBE_DEFER)
+		if (ret > 0 || ret == -EPROBE_DEFER)
 			return ret;
 	}
 
@@ -643,6 +643,8 @@ int __init_or_module platform_driver_probe(struct platform_driver *drv,
 	/* temporary section violation during probe() */
 	drv->probe = probe;
 	retval = code = platform_driver_register(drv);
+	if (retval)
+		return retval;
 
 	/*
 	 * Fixup that section violation, being paranoid about code scanning

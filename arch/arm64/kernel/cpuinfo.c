@@ -22,6 +22,8 @@
 
 #include <linux/bitops.h>
 #include <linux/bug.h>
+#include <linux/compat.h>
+#include <linux/elf.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/preempt.h>
