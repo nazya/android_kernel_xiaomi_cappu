@@ -562,8 +562,13 @@ static int snd_pcm_hw_params(struct snd_pcm_substream *substream,
 	while (runtime->boundary * 2 <= LONG_MAX - runtime->buffer_size)
 		runtime->boundary *= 2;
 
-	/* clear the buffer for avoiding possible kernel info leaks */
-	if (runtime->dma_area && !substream->ops->copy)
+	/*
+	 * Clear the buffer for avoiding possible kernel info leaks. Only
+	 * clear a buffer the PCM core allocated: a driver that sets
+	 * dma_area itself may point it at device memory, which memset()
+	 * cannot write.
+	 */
+	if (runtime->dma_area && runtime->dma_buffer_p && !substream->ops->copy)
 		memset(runtime->dma_area, 0, runtime->dma_bytes);
 
 	snd_pcm_timer_resolution_change(substream);
