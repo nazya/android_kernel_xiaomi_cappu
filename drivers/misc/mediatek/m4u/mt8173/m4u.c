@@ -645,7 +645,7 @@ int m4u_alloc_mva(m4u_client_t *client, M4U_PORT_ID port,
 			m4u_port_2_larb_id(port), m4u_get_port_name(port), va, sg_table, size,
 			prot, flags);
 			ret = -EFAULT;
-			goto err;
+			goto err_sgtable;
 		}
 	}
 	/* here we get correct sg_table for this buffer */
@@ -740,12 +740,13 @@ int m4u_alloc_mva(m4u_client_t *client, M4U_PORT_ID port,
  err:
 	if (va) {
 		/* Unpin user pages, as m4u_dealloc_mva() does for a mapped buffer */
-		if (!IS_ERR_OR_NULL(sg_table) && va < PAGE_OFFSET &&
+		if (va < PAGE_OFFSET &&
 		    !(va >= VMALLOC_START && va <= VMALLOC_END))
 			m4u_put_sgtable_pages(sg_table);
 		m4u_destroy_sgtable(sg_table);
 	}
 
+ err_sgtable:
 	*pMva = 0;
 
 	M4UMSG("error: larb=%d,module=%s,va=0x%lx,sg=0x%p,size=%d,prot=0x%x,flags=0x%x, mva=0x%x\n",
