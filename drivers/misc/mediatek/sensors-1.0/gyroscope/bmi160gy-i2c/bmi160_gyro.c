@@ -119,7 +119,6 @@ static struct gyro_hw *hw = &gyro_cust;
 static struct gyro_init_info bmi160_gyro_init_info;
 /* Probe result observed by the generic gyroscope wrapper. */
 static int bmi160_gyro_init_flag = -ENODEV;
-static bool bmi160_gyro_driver_registered;
 static struct i2c_driver bmg_i2c_driver;
 static struct bmg_i2c_data *obj_i2c_data;
 static int bmg_set_powermode(struct i2c_client *client,
@@ -1450,10 +1449,7 @@ static struct i2c_driver bmg_i2c_driver = {
 
 static int bmi160_gyro_remove(void)
 {
-	if (bmi160_gyro_driver_registered) {
-		i2c_del_driver(&bmg_i2c_driver);
-		bmi160_gyro_driver_registered = false;
-	}
+	i2c_del_driver(&bmg_i2c_driver);
 	bmi160_gyro_init_flag = -ENODEV;
 	return 0;
 }
@@ -1473,19 +1469,15 @@ static int bmi160_gyro_local_init(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	if (!bmi160_gyro_driver_registered) {
-		bmi160_gyro_init_flag = -ENODEV;
-		err = i2c_add_driver(&bmg_i2c_driver);
-		if (err) {
-			GYRO_PR_ERR("add gyro driver error: %d\n", err);
-			return err;
-		}
-		bmi160_gyro_driver_registered = true;
+	bmi160_gyro_init_flag = -ENODEV;
+	err = i2c_add_driver(&bmg_i2c_driver);
+	if (err) {
+		GYRO_PR_ERR("add gyro driver error: %d\n", err);
+		return err;
 	}
 	if (bmi160_gyro_init_flag) {
 		err = bmi160_gyro_init_flag;
 		i2c_del_driver(&bmg_i2c_driver);
-		bmi160_gyro_driver_registered = false;
 		return err;
 	}
 	GYRO_LOG("bmi160 gyro init ok.\n");

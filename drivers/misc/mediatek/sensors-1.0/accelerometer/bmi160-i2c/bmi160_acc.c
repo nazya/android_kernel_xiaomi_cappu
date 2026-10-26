@@ -711,14 +711,11 @@ static int bmi160_acc_update_power_locked(struct bmi160_acc_i2c_data *obj)
 	return 0;
 }
 
-static int bmi160_acc_set_power_mode(struct i2c_client *client, bool enable)
+static int bmi160_acc_set_power_mode(bool enable)
 {
 	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
 	bool previous;
 	int err;
-
-	if (!obj || !client || client != obj->client)
-		return -ENODEV;
 
 	mutex_lock(&obj->lock);
 	previous = obj->accel_power_requested;
@@ -735,9 +732,6 @@ int bmi160_acc_set_smd_power(bool enable)
 	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
 	bool previous;
 	int err;
-
-	if (!obj || !obj->client)
-		return -ENODEV;
 
 	mutex_lock(&obj->lock);
 	previous = obj->smd_power_requested;
@@ -1854,7 +1848,7 @@ static int bmi160_acc_init_client(struct i2c_client *client, int reset_cali)
 	err = bmi160_acc_set_int_enable(client, 0);
 	if (err < 0)
 		return err;
-	err = bmi160_acc_set_power_mode(client, false);
+	err = bmi160_acc_set_power_mode(false);
 	if (err < 0)
 		return err;
 	if (0 != reset_cali) {
@@ -1924,7 +1918,7 @@ static int bmi160_acc_read_sensor_data(struct i2c_client *client, char *buf,
 	s16 databuf[BMI160_ACC_AXES_NUM] = { 0 };
 	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
 	if (sensor_power == false) {
-		err = bmi160_acc_set_power_mode(client, true);
+		err = bmi160_acc_set_power_mode(true);
 		if (err) {
 			GSE_ERR("set power on acc failed.\n");
 			return err;
@@ -2072,9 +2066,9 @@ static ssize_t store_acc_op_mode_value(struct device_driver *ddri,
 		return err;
 	GSE_LOG("store_acc_op_mode_value = %d .\n", (int)data);
 	if (data == BMI160_ACC_MODE_NORMAL)
-		err = bmi160_acc_set_power_mode(bmi160_acc_i2c_client, true);
+		err = bmi160_acc_set_power_mode(true);
 	else
-		err = bmi160_acc_set_power_mode(bmi160_acc_i2c_client, false);
+		err = bmi160_acc_set_power_mode(false);
 	if (err < 0) {
 		GSE_ERR("set acc op mode = %d failed.\n", (int)data);
 		return err;
@@ -3521,7 +3515,7 @@ static int bmi160_acc_enable_nodata(int en)
 		power = true;
 	else
 		power = false;
-	err = bmi160_acc_set_power_mode(obj_i2c_data->client, power);
+	err = bmi160_acc_set_power_mode(power);
 	if (err < 0) {
 		GSE_ERR("bmi160_acc_set_power_mode failed.\n");
 		return err;
@@ -3598,22 +3592,15 @@ static int bmi160_acc_get_data(int *x, int *y, int *z, int *status)
 int bmi160_acc_set_smd_irq_wake(bool enable)
 {
 	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
-	int err = 0;
-
-	if (!obj || !obj->irq_requested || obj->IRQ <= 0)
-		return -ENODEV;
+	int err;
 
 	mutex_lock(&obj->irq_lock);
-	if (obj->smd_irq_wake_enabled == enable)
-		goto out;
-
 	if (enable)
 		err = enable_irq_wake(obj->IRQ);
 	else
 		err = disable_irq_wake(obj->IRQ);
 	if (!err)
 		obj->smd_irq_wake_enabled = enable;
-out:
 	mutex_unlock(&obj->irq_lock);
 	return err;
 }
@@ -3621,15 +3608,7 @@ EXPORT_SYMBOL_GPL(bmi160_acc_set_smd_irq_wake);
 
 int bmi160_acc_reset_smd_interrupt(void)
 {
-	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
-	u8 command = CMD_RESET_INT_ENGINE;
-	int err;
-
-	if (!obj || !obj->client)
-		return -ENODEV;
-
-	err = bmi160_acc_exec_command(command);
-	return err;
+	return bmi160_acc_exec_command(CMD_RESET_INT_ENGINE);
 }
 EXPORT_SYMBOL_GPL(bmi160_acc_reset_smd_interrupt);
 

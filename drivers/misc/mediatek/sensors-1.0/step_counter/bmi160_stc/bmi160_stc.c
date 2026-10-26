@@ -140,9 +140,6 @@ BMI160_RETURN_FUNCTION_TYPE bmi160_set_step_counter_enable(u8 v_step_counter_u8)
 	BMI160_RETURN_FUNCTION_TYPE com_rslt = E_BMI160_COMM_RES;
 	u8 v_data_u8 = BMI160_INIT_VALUE;
 
-	if (!obj || !obj->client)
-		return E_BMI160_NULL_PTR;
-
 	/* write the step counter */
 	com_rslt = stc_i2c_read_block(obj->client,
 	BMI160_USER_STEP_CONFIG_1_STEP_COUNT_ENABLE__REG,
@@ -986,9 +983,6 @@ static int bmi160_step_c_enable_nodata(int en)
 	int err = 0;
 
 	STEP_C_FUN("bmi160_step_c_enable_nodata\n");
-	if (!obj || (en != 0 && en != 1))
-		return -EINVAL;
-
 	mutex_lock(&obj->enable_lock);
 	if (obj->stepcounter_enable == en)
 		goto out;
@@ -1053,9 +1047,6 @@ static int bmi160_set_significant_axes(int en, u8 *saved)
 	int rollback_err;
 	int err;
 
-	if (!obj || !obj->client || (en != 0 && en != 1))
-		return -EINVAL;
-
 	err = stc_i2c_read_block(obj->client, BMI160_USER_INTR_ENABLE_0_ADDR,
 				 &previous, 1);
 	if (err)
@@ -1087,9 +1078,6 @@ static int bmi160_step_c_enable_significant(int en)
 	u8 v_data = 0x0b;
 
 	STEP_C_LOG("bmi160_step_c_enable_significant, en = %d\n", en);
-	if (!obj || (en != 0 && en != 1))
-		return -EINVAL;
-
 	mutex_lock(&obj->enable_lock);
 	if (en) {
 		err = bmi160_acc_set_smd_power(true);
@@ -1172,10 +1160,6 @@ disable_sensor:
 	if (rollback_err)
 		STEP_C_PR_ERR("failed to reset significant interrupt: %d\n",
 			       rollback_err);
-	rollback_err = bmi160_acc_set_smd_irq_wake(false);
-	if (rollback_err && rollback_err != -ENODEV)
-		STEP_C_PR_ERR("failed to disable significant IRQ wake: %d\n",
-			       rollback_err);
 disable_power:
 	rollback_err = bmi160_acc_set_smd_power(false);
 	if (rollback_err)
@@ -1195,9 +1179,6 @@ static int bmi160_step_c_enable_step_detect(int en)
 	int err = 0;
 
 	STEP_C_LOG("bmi160_step_c_enable_step_detect, en = %d\n", en);
-	if (!obj || (en != 0 && en != 1))
-		return -EINVAL;
-
 	mutex_lock(&obj->enable_lock);
 	if (obj->stepdet_enable == en)
 		goto out;
