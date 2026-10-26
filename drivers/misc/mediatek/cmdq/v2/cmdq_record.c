@@ -1152,16 +1152,15 @@ int32_t cmdq_task_flush_async(cmdqRecHandle handle)
 	     handle->scenario, handle->priority, handle->engineFlag, handle->pBuffer,
 	     handle->blockSize);
 
-	if (status >= 0 && pTask) {
+	/* A submit sets pTask exactly when it succeeds */
+	if (status >= 0) {
 		pTask->flushCallback = NULL;
 		pTask->flushData = 0;
 	}
 
 	/* insert the task into auto-release queue */
-	if (status >= 0 && pTask)
+	if (status >= 0)
 		status = cmdqCoreAutoReleaseTask(pTask);
-	else if (status >= 0)
-		status = -ENOMEM;
 
 	return status;
 }
@@ -1195,7 +1194,7 @@ int32_t cmdq_task_flush_async_callback(cmdqRecHandle handle, CmdqAsyncFlushCB ca
 
 	/* insert the callback here. */
 	/* note that, the task may be already completed at this point. */
-	if (status >= 0 && pTask) {
+	if (status >= 0) {
 		pTask->flushCallback = callback;
 		pTask->flushData = userData;
 	}
@@ -1206,10 +1205,8 @@ int32_t cmdq_task_flush_async_callback(cmdqRecHandle handle, CmdqAsyncFlushCB ca
 	     handle->blockSize);
 
 	/* insert the task into auto-release queue */
-	if (status >= 0 && pTask)
+	if (status >= 0)
 		status = cmdqCoreAutoReleaseTask(pTask);
-	else if (status >= 0)
-		status = -ENOMEM;
 
 	return status;
 }

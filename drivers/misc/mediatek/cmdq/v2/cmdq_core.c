@@ -88,8 +88,8 @@ static DEFINE_SPINLOCK(gCmdqExecLock);
 static DEFINE_SPINLOCK(gCmdqRecordLock);
 static DEFINE_MUTEX(gCmdqResourceMutex);
 
+/* 64 bits: one job a nanosecond would take 584 years to wrap */
 static uint64_t gCmdqNextUserHandle;
-static bool gCmdqUserHandleExhausted;
 
 struct CmdTaskAutoReleaseWork {
 	struct work_struct work;
@@ -2125,134 +2125,67 @@ static void cmdq_core_file_node_release(struct kref *ref)
 	struct cmdqFileNodeStruct *file_node =
 		container_of(ref, struct cmdqFileNodeStruct, ref);
 
-	WARN_ON(file_node->inflightTasks);
-	WARN_ON(!list_empty(&file_node->taskList));
-	WARN_ON(!list_empty(&file_node->submissionList));
 	kfree(file_node);
 }
 
+/* The file node comes zeroed from kzalloc() in cmdq_open() */
 void cmdq_core_init_file_node(struct cmdqFileNodeStruct *file_node)
 {
-	if (!file_node)
-		return;
-
 	kref_init(&file_node->ref);
-	file_node->closing = false;
-	file_node->inflightTasks = 0;
-	file_node->nextSubmissionSequence = 0;
 	INIT_LIST_HEAD(&file_node->taskList);
 	INIT_LIST_HEAD(&file_node->submissionList);
 }
 
-int cmdq_core_begin_file_submission(struct cmdqFileNodeStruct *file_node,
-	struct cmdqFileSubmission *submission)
-{
-	int status = 0;
-
-	if (!file_node || !submission)
-		return -EINVAL;
-
-	INIT_LIST_HEAD(&submission->listEntry);
-	submission->fileNode = NULL;
-	submission->sequence = 0;
-	submission->active = false;
-
-	mutex_lock(&gCmdqTaskMutex);
-	if (file_node->closing) {
-		status = -EBADF;
-		goto out;
-	}
-	if (file_node->nextSubmissionSequence == ~0ULL) {
-		status = -EOVERFLOW;
-		goto out;
-	}
-
-	kref_get(&file_node->ref);
-	submission->fileNode = file_node;
-	submission->sequence = ++file_node->nextSubmissionSequence;
-	submission->active = true;
-	list_add_tail(&submission->listEntry, &file_node->submissionList);
-out:
-	mutex_unlock(&gCmdqTaskMutex);
-	return status;
-}
-
-static void cmdq_core_bind_file_submission_locked(
-	struct cmdqFileSubmission *submission, TaskStruct *task)
+/*
+ * Submissions are tracked only within an ioctl on the file, and ->release
+ * cannot run while an ioctl holds the file, so the node is never closing here.
+ */
+static void cmdq_core_add_file_submission_locked(
+	struct cmdqFileNodeStruct *file_node,
+	struct cmdqFileSubmission *submission, uint64_t sequence)
 {
 	lockdep_assert_held(&gCmdqTaskMutex);
-	if (!task)
-		return;
-	if (WARN_ON(!submission->active || !submission->fileNode ||
-	    task->fileNode != submission->fileNode))
-		return;
-	if (WARN_ON(task->ownerSequence &&
-	    task->ownerSequence != submission->sequence))
-		return;
-	task->ownerSequence = submission->sequence;
+	kref_get(&file_node->ref);
+	submission->fileNode = file_node;
+	submission->sequence = sequence;
+	list_add_tail(&submission->listEntry, &file_node->submissionList);
 }
 
+void cmdq_core_begin_file_submission(struct cmdqFileNodeStruct *file_node,
+	struct cmdqFileSubmission *submission)
+{
+	mutex_lock(&gCmdqTaskMutex);
+	cmdq_core_add_file_submission_locked(file_node, submission,
+		++file_node->nextSubmissionSequence);
+	mutex_unlock(&gCmdqTaskMutex);
+}
+
+/* Bind the task that a successful submit created to its submission */
 void cmdq_core_bind_file_submission(struct cmdqFileSubmission *submission,
 	TaskStruct *task)
 {
-	if (!submission || !task)
-		return;
-
 	mutex_lock(&gCmdqTaskMutex);
-	cmdq_core_bind_file_submission_locked(submission, task);
-	if (submission->active && submission->fileNode)
-		cmdq_core_reap_write_addresses_locked(submission->fileNode,
-			false);
+	task->ownerSequence = submission->sequence;
+	cmdq_core_reap_write_addresses_locked(submission->fileNode, false);
 	mutex_unlock(&gCmdqTaskMutex);
 }
 
-int cmdq_core_retain_task_submission(struct cmdqFileNodeStruct *file_node,
+/* The task was claimed on this file and was bound when it was submitted */
+void cmdq_core_retain_task_submission(struct cmdqFileNodeStruct *file_node,
 	TaskStruct *task, struct cmdqFileSubmission *submission)
 {
-	int status = 0;
-
-	if (!file_node || !task || !submission)
-		return -EINVAL;
-
-	INIT_LIST_HEAD(&submission->listEntry);
-	submission->fileNode = NULL;
-	submission->sequence = 0;
-	submission->active = false;
-
 	mutex_lock(&gCmdqTaskMutex);
-	if (file_node->closing) {
-		status = -EBADF;
-		goto out;
-	}
-	if (task->fileNode != file_node || !task->ownerSequence) {
-		status = -EINVAL;
-		goto out;
-	}
-
-	kref_get(&file_node->ref);
-	submission->fileNode = file_node;
-	submission->sequence = task->ownerSequence;
-	submission->active = true;
-	list_add_tail(&submission->listEntry, &file_node->submissionList);
-out:
+	cmdq_core_add_file_submission_locked(file_node, submission,
+		task->ownerSequence);
 	mutex_unlock(&gCmdqTaskMutex);
-	return status;
 }
 
-void cmdq_core_end_file_submission(struct cmdqFileSubmission *submission,
-	TaskStruct *task)
+void cmdq_core_end_file_submission(struct cmdqFileSubmission *submission)
 {
-	struct cmdqFileNodeStruct *file_node;
-
-	if (!submission || !submission->active || !submission->fileNode)
-		return;
+	struct cmdqFileNodeStruct *file_node = submission->fileNode;
 
 	mutex_lock(&gCmdqTaskMutex);
-	file_node = submission->fileNode;
-	cmdq_core_bind_file_submission_locked(submission, task);
-	list_del_init(&submission->listEntry);
-	submission->active = false;
-	submission->fileNode = NULL;
+	list_del(&submission->listEntry);
 	cmdq_core_reap_write_addresses_locked(file_node, false);
 	kref_put(&file_node->ref, cmdq_core_file_node_release);
 	mutex_unlock(&gCmdqTaskMutex);
@@ -2264,7 +2197,6 @@ static void cmdq_core_file_node_get_task_locked(
 	lockdep_assert_held(&gCmdqTaskMutex);
 
 	kref_get(&file_node->ref);
-	file_node->inflightTasks++;
 	list_add_tail(&task->ownerEntry, &file_node->taskList);
 	task->fileNode = file_node;
 	task->ownerSequence = 0;
@@ -2275,15 +2207,12 @@ static void cmdq_core_file_node_put_task_locked(TaskStruct *task)
 	struct cmdqFileNodeStruct *file_node = task->fileNode;
 
 	lockdep_assert_held(&gCmdqTaskMutex);
+	/* Kernel tasks have no file */
 	if (!file_node)
 		return;
 
 	list_del_init(&task->ownerEntry);
 	task->fileNode = NULL;
-	if (WARN_ON(!file_node->inflightTasks))
-		file_node->inflightTasks = 0;
-	else
-		file_node->inflightTasks--;
 
 	cmdq_core_reap_write_addresses_locked(file_node, file_node->closing);
 	kref_put(&file_node->ref, cmdq_core_file_node_release);
@@ -2295,9 +2224,6 @@ static TaskStruct *cmdq_core_find_user_job_locked(
 	TaskStruct *task;
 
 	lockdep_assert_held(&gCmdqTaskMutex);
-	if (!file_node || !handle)
-		return NULL;
-
 	list_for_each_entry(task, &file_node->taskList, ownerEntry) {
 		if (task->userHandle == handle)
 			return task;
@@ -2306,64 +2232,35 @@ static TaskStruct *cmdq_core_find_user_job_locked(
 	return NULL;
 }
 
-int cmdq_core_prepare_user_job(TaskStruct *pTask,
-	struct cmdqFileNodeStruct *file_node, uint64_t *handle)
+/*
+ * The ASYNC_JOB_EXEC and WAIT_AND_CLOSE ioctls move a job through these
+ * states one step at a time, each step under the task mutex right after the
+ * one before, so the steps below need no state checks of their own.  Only a
+ * claim takes a handle from userspace.
+ */
+void cmdq_core_prepare_user_job(TaskStruct *pTask, uint64_t *handle)
 {
-	int status = 0;
-
 	mutex_lock(&gCmdqTaskMutex);
-	if (!pTask || !file_node || !handle || pTask->fileNode != file_node ||
-		pTask->userJobState != CMDQ_USER_JOB_NONE || file_node->closing) {
-		status = file_node && file_node->closing ? -EBADF : -EINVAL;
-		goto out;
-	}
-	if (gCmdqUserHandleExhausted || gCmdqNextUserHandle == ~0ULL) {
-		gCmdqUserHandleExhausted = true;
-		status = -EOVERFLOW;
-		goto out;
-	}
-
 	pTask->userHandle = ++gCmdqNextUserHandle;
 	pTask->userJobState = CMDQ_USER_JOB_PUBLISHING;
 	*handle = pTask->userHandle;
-out:
 	mutex_unlock(&gCmdqTaskMutex);
-	return status;
 }
 
-int cmdq_core_publish_user_job(TaskStruct *pTask,
-	struct cmdqFileNodeStruct *file_node, uint64_t handle)
+void cmdq_core_publish_user_job(TaskStruct *pTask)
 {
-	int status = 0;
-
 	mutex_lock(&gCmdqTaskMutex);
-	if (!pTask || pTask->fileNode != file_node ||
-		pTask->userHandle != handle ||
-		pTask->userJobState != CMDQ_USER_JOB_PUBLISHING)
-		status = -EINVAL;
-	else
-		pTask->userJobState = CMDQ_USER_JOB_PUBLISHED;
+	pTask->userJobState = CMDQ_USER_JOB_PUBLISHED;
 	mutex_unlock(&gCmdqTaskMutex);
-	return status;
 }
 
-int cmdq_core_cancel_user_job(TaskStruct *pTask,
-	struct cmdqFileNodeStruct *file_node, uint64_t handle)
+/* For a job whose handle did not reach userspace */
+void cmdq_core_cancel_user_job(TaskStruct *pTask)
 {
-	int status = 0;
-
 	mutex_lock(&gCmdqTaskMutex);
-	if (!pTask || pTask->fileNode != file_node ||
-		pTask->userHandle != handle ||
-		(pTask->userJobState != CMDQ_USER_JOB_PUBLISHING &&
-		 pTask->userJobState != CMDQ_USER_JOB_PUBLISHED)) {
-		status = -EINVAL;
-	} else {
-		pTask->userHandle = 0;
-		pTask->userJobState = CMDQ_USER_JOB_CONSUMED;
-	}
+	pTask->userHandle = 0;
+	pTask->userJobState = CMDQ_USER_JOB_CONSUMED;
 	mutex_unlock(&gCmdqTaskMutex);
-	return status;
 }
 
 int cmdq_core_claim_user_job(struct cmdqFileNodeStruct *file_node,
@@ -2373,9 +2270,7 @@ int cmdq_core_claim_user_job(struct cmdqFileNodeStruct *file_node,
 	TaskStruct *task;
 	int status = 0;
 
-	if (pTaskOut)
-		*pTaskOut = NULL;
-	if (!file_node || !info || !pTaskOut || !handle)
+	if (!handle)
 		return -EINVAL;
 
 	mutex_lock(&gCmdqTaskMutex);
@@ -2415,39 +2310,20 @@ out:
 	return status;
 }
 
-int cmdq_core_unclaim_user_job(TaskStruct *pTask,
-	struct cmdqFileNodeStruct *file_node, uint64_t handle)
+/* Give a claimed job back, so that another wait can claim it */
+void cmdq_core_unclaim_user_job(TaskStruct *pTask)
 {
-	int status = 0;
-
 	mutex_lock(&gCmdqTaskMutex);
-	if (!pTask || pTask->fileNode != file_node ||
-		pTask->userHandle != handle ||
-		pTask->userJobState != CMDQ_USER_JOB_CLAIMED)
-		status = -EINVAL;
-	else
-		pTask->userJobState = CMDQ_USER_JOB_PUBLISHED;
+	pTask->userJobState = CMDQ_USER_JOB_PUBLISHED;
 	mutex_unlock(&gCmdqTaskMutex);
-	return status;
 }
 
-int cmdq_core_consume_user_job(TaskStruct *pTask,
-	struct cmdqFileNodeStruct *file_node, uint64_t handle)
+void cmdq_core_consume_user_job(TaskStruct *pTask)
 {
-	int status = 0;
-
 	mutex_lock(&gCmdqTaskMutex);
-	if (!pTask || pTask->fileNode != file_node ||
-		pTask->userHandle != handle ||
-		pTask->userJobState != CMDQ_USER_JOB_CLAIMED) {
-		status = -EINVAL;
-	} else {
-		pTask->userHandle = 0;
-		pTask->userJobState = CMDQ_USER_JOB_CONSUMED;
-	}
+	pTask->userHandle = 0;
+	pTask->userJobState = CMDQ_USER_JOB_CONSUMED;
 	mutex_unlock(&gCmdqTaskMutex);
-
-	return status;
 }
 
 static void cmdq_core_release_buffer(TaskStruct *pTask)
@@ -2535,7 +2411,6 @@ static void cmdq_core_release_task_unlocked(TaskStruct *pTask)
 	pTask->flushData = 0;
 	pTask->regCountUserSpace = 0;
 	pTask->regUserToken = 0;
-	pTask->resourceLocked = false;
 	atomic_set(&pTask->useWorkQueue, 0);
 
 	/* remove from active/waiting list */
@@ -3602,17 +3477,9 @@ static TaskStruct *cmdq_core_acquire_task(cmdqCommandStruct *pCommandDesc,
 		struct TaskStruct *taskEntry = NULL;
 		struct list_head *p = NULL;
 
-		if (cmdq_core_is_request_from_user_space(pTask->scenario) &&
-		    pTask->privateData) {
-			struct cmdqFileNodeStruct *file_node = pTask->privateData;
-
-			if (file_node->closing) {
-				cmdq_core_release_task_unlocked(pTask);
-				pTask = NULL;
-				goto unlock_task_list;
-			}
-			cmdq_core_file_node_get_task_locked(file_node, pTask);
-		}
+		/* User tasks come from an ioctl on their file, which is not closing */
+		if (cmdq_core_is_request_from_user_space(pTask->scenario))
+			cmdq_core_file_node_get_task_locked(pTask->privateData, pTask);
 
 		/* add to waiting list, keep it sorted by priority */
 		/* so that we add high-priority tasks first. */
@@ -3628,7 +3495,6 @@ static TaskStruct *cmdq_core_acquire_task(cmdqCommandStruct *pCommandDesc,
 
 		list_add(&(pTask->listEntry), insertAfter);
 	}
-unlock_task_list:
 	mutex_unlock(&gCmdqTaskMutex);
 
 	CMDQ_MSG("<--TASK: acquire task 0x%p end\n", pTask);
@@ -4062,8 +3928,7 @@ static uint64_t cmdq_core_get_not_used_engine_flag_for_disable_clock(
 static int32_t cmdq_core_acquire_thread(uint64_t engineFlag,
 					CMDQ_HW_THREAD_PRIORITY_ENUM thread_prio,
 					CMDQ_SCENARIO_ENUM scenario, bool forceLog,
-					const bool is_secure, int32_t *dispatchError,
-					uint64_t *enginesNotUsed)
+					const bool is_secure, int32_t *dispatchError)
 {
 	unsigned long flags;
 	int32_t thread;
@@ -4072,7 +3937,6 @@ static int32_t cmdq_core_acquire_thread(uint64_t engineFlag,
 
 	CMDQ_PROF_START(current->pid, __func__);
 	*dispatchError = 0;
-	*enginesNotUsed = 0;
 
 	do {
 		mutex_lock(&gCmdqClockMutex);
@@ -4104,8 +3968,7 @@ static int32_t cmdq_core_acquire_thread(uint64_t engineFlag,
 				 * and can never execute against an unpowered ISP.
 				 */
 				spin_lock_irqsave(&gCmdqThreadLock, flags);
-				*enginesNotUsed =
-					cmdq_core_get_not_used_engine_flag_for_disable_clock(engineFlag);
+				cmdq_core_get_not_used_engine_flag_for_disable_clock(engineFlag);
 				if (gCmdqContext.thread[thread].taskCount == 0 &&
 				    gCmdqContext.thread[thread].engineFlag == 0)
 					gCmdqContext.thread[thread].allowDispatching = 1;
@@ -6181,9 +6044,7 @@ static int32_t cmdq_core_force_remove_task_from_thread(TaskStruct *pTask, uint32
 			}
 		}
 	}
-	if (removed && WARN_ON(pThread->taskCount <= 0))
-		pThread->taskCount = 0;
-	else if (removed)
+	if (removed)
 		pThread->taskCount--;
 
 	return status;
@@ -6609,9 +6470,7 @@ static int32_t cmdq_core_wait_task_done_with_timeout_impl(TaskStruct *pTask, int
 
 		/* Suspend may have detached this task while the waiter slept. */
 		mutex_lock(&gCmdqTaskMutex);
-		if (pTask->dispatchError < 0 ||
-		    pTask->taskState == TASK_STATE_KILLED ||
-		    pTask->thread != thread) {
+		if (pTask->dispatchError < 0) {
 			mutex_unlock(&gCmdqTaskMutex);
 			break;
 		}
@@ -7115,11 +6974,9 @@ static int32_t cmdq_core_wait_task_done(TaskStruct *pTask, long timeout_jiffies)
 	 * timeout recovery against a detached or subsequently reused HW thread.
 	 */
 	mutex_lock(&gCmdqTaskMutex);
+	/* Suspend and a failed dispatch kill a task with a dispatch error */
 	if (pTask->dispatchError < 0) {
 		status = pTask->dispatchError;
-	} else if (pTask->taskState == TASK_STATE_KILLED ||
-		   pTask->thread != thread) {
-		status = -ECANCELED;
 	} else {
 		status = (false == pTask->secData.is_secure) ?
 			cmdq_core_handle_wait_task_result_impl(pTask, thread, waitQ) :
@@ -7914,7 +7771,6 @@ static int32_t cmdq_core_consume_waiting_list(struct work_struct *_ignore)
 	bool timeout_flag = false;
 	bool terminalDispatch = false;
 	int32_t dispatchError = 0;
-	uint64_t enginesNotUsed = 0;
 	uint32_t disp_list_count = 0;
 	uint32_t user_list_count = 0;
 	uint32_t index = 0;
@@ -7965,8 +7821,7 @@ static int32_t cmdq_core_consume_waiting_list(struct work_struct *_ignore)
 		/* Allocate hw thread */
 		thread = cmdq_core_acquire_thread(pTask->engineFlag,
 						  thread_prio, pTask->scenario, needLog,
-						  pTask->secData.is_secure, &dispatchError,
-						  &enginesNotUsed);
+						  pTask->secData.is_secure, &dispatchError);
 
 		if (CMDQ_INVALID_THREAD == thread) {
 			if (dispatchError < 0) {
@@ -8091,11 +7946,8 @@ int32_t cmdqCoreSubmitTaskAsyncImpl(cmdqCommandStruct *pCommandDesc,
 	struct TaskStruct *pTask = NULL;
 	int32_t status = 0;
 
-	if (ppTaskOut)
-		*ppTaskOut = NULL;
-	if (CMDQ_SCENARIO_TRIGGER_LOOP != pCommandDesc->scenario &&
-	    !cmdq_core_verfiy_command_desc_end(pCommandDesc))
-		return -EINVAL;
+	if (CMDQ_SCENARIO_TRIGGER_LOOP != pCommandDesc->scenario)
+		cmdq_core_verfiy_command_desc_end(pCommandDesc);
 
 	CMDQ_MSG("-->SUBMIT_ASYNC: cmd 0x%p begin\n", CMDQ_U32_PTR(pCommandDesc->pVABase));
 	CMDQ_PROF_START(current->pid, __func__);
@@ -8131,8 +7983,6 @@ int32_t cmdqCoreSubmitTaskAsync(cmdqCommandStruct *pCommandDesc,
 {
 	int32_t status = 0;
 	TaskStruct *pTask = NULL;
-	if (ppTaskOut)
-		*ppTaskOut = NULL;
 
 	if (true == pCommandDesc->secData.is_secure) {
 		status = cmdq_core_start_secure_path_notify_thread();
@@ -8155,8 +8005,6 @@ int32_t cmdqCoreReleaseTask(TaskStruct *pTask)
 	struct ThreadStruct *pThread = NULL;
 
 	CMDQ_MSG("<--TASK: cmdqCoreReleaseTask 0x%p\n", pTask);
-	if (!pTask)
-		return -EINVAL;
 
 	/* Serialize the state test, HW detachment and object recycling. */
 	mutex_lock(&gCmdqTaskMutex);
@@ -8277,8 +8125,7 @@ int32_t cmdqCoreWaitResultAndReleaseTask(TaskStruct *pTask,
 
 	status = cmdq_core_wait_result_and_cleanup_task(pTask, pResult,
 		timeout_jiffies);
-	if (pTask && pTask->taskState != TASK_STATE_IDLE)
-		cmdq_core_release_task(pTask);
+	cmdq_core_release_task(pTask);
 
 	return status;
 }
@@ -8387,22 +8234,20 @@ int32_t cmdqCoreAutoReleaseTask(TaskStruct *pTask)
 		      MMProfileFlagPulse, ((unsigned long)pTask), threadNo);
 
 	/* Put auto release task to corresponded thread */
-	if (threadNo >= 0 && threadNo < CMDQ_MAX_THREAD_COUNT) {
+	if (threadNo != CMDQ_INVALID_THREAD) {
 		wq = gCmdqContext.taskThreadAutoReleaseWQ[threadNo];
 	} else {
 		/* if task does not belong thread, use static dispatch thread at first, */
 		/* otherwise, use global context workqueue */
 		is_secure = pTask->secData.is_secure;
 		threadNo = cmdq_get_func()->getThreadID(pTask->scenario, is_secure);
-		wq = threadNo >= 0 && threadNo < CMDQ_MAX_THREAD_COUNT ?
+		wq = threadNo != CMDQ_INVALID_THREAD ?
 			gCmdqContext.taskThreadAutoReleaseWQ[threadNo] :
 			gCmdqContext.taskAutoReleaseWQ;
 	}
 
-	if (!queue_work(wq, &release_work->work)) {
-		kfree(release_work);
-		return cmdq_core_auto_release_task_sync(pTask);
-	}
+	/* The work is new, so it cannot be pending */
+	queue_work(wq, &release_work->work);
 	return 0;
 }
 
@@ -8454,9 +8299,6 @@ void cmdq_core_release_task_by_file_node(struct cmdqFileNodeStruct *file_node)
 	struct TaskStruct *pTask;
 	struct TaskStruct *autoTask;
 	bool released;
-
-	if (!file_node)
-		return;
 
 	mutex_lock(&gCmdqTaskMutex);
 	file_node->closing = true;
@@ -8708,8 +8550,6 @@ int32_t cmdqCoreInitialize(void)
 	/* Reset overall context */
 	memset(&gCmdqContext, 0x0, sizeof(ContextStruct));
 	gCmdqSuspended = false;
-	gCmdqNextUserHandle = 0;
-	gCmdqUserHandleExhausted = false;
 	/* some fields has non-zero initial value */
 	cmdq_core_reset_engine_struct();
 	cmdq_core_reset_thread_struct();
@@ -8884,8 +8724,8 @@ static void cmdq_core_free_write_address_entry(WriteAddrStruct *entry)
 	kfree(entry);
 }
 
-static int cmdq_core_alloc_write_address(uint32_t count, dma_addr_t *paStart,
-	struct cmdqFileNodeStruct *file_node)
+static WriteAddrStruct *cmdq_core_alloc_write_address(uint32_t count,
+	dma_addr_t *paStart, struct cmdqFileNodeStruct *file_node)
 {
 	WriteAddrStruct *entry;
 	unsigned long flags;
@@ -8893,14 +8733,14 @@ static int cmdq_core_alloc_write_address(uint32_t count, dma_addr_t *paStart,
 	uint32_t *value;
 	uint32_t index;
 
-	if (!paStart || !count || count > CMDQ_MAX_WRITE_ADDR_COUNT)
-		return -EINVAL;
+	if (!count || count > CMDQ_MAX_WRITE_ADDR_COUNT)
+		return ERR_PTR(-EINVAL);
 	*paStart = 0;
 	bytes = (size_t)count * sizeof(uint32_t);
 
 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (!entry)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 	entry->count = count;
 	entry->bytes = bytes;
 	entry->fileNode = file_node;
@@ -8910,7 +8750,7 @@ static int cmdq_core_alloc_write_address(uint32_t count, dma_addr_t *paStart,
 		&entry->pa, GFP_KERNEL);
 	if (!entry->va) {
 		kfree(entry);
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 	}
 
 	/* The userspace ABI carries only the low 32-bit DMA token. */
@@ -8918,7 +8758,7 @@ static int cmdq_core_alloc_write_address(uint32_t count, dma_addr_t *paStart,
 	    (upper_32_bits(entry->pa) ||
 	     lower_32_bits(entry->pa) > U32_MAX - (bytes - 1))) {
 		cmdq_core_free_write_address_entry(entry);
-		return -EOVERFLOW;
+		return ERR_PTR(-EOVERFLOW);
 	}
 
 	value = entry->va;
@@ -8930,86 +8770,52 @@ static int cmdq_core_alloc_write_address(uint32_t count, dma_addr_t *paStart,
 	list_add_tail(&entry->list_node, &gCmdqContext.writeAddrList);
 	spin_unlock_irqrestore(&gCmdqWriteAddrLock, flags);
 	*paStart = entry->pa;
-	return 0;
+	return entry;
 }
 
 int cmdqCoreAllocWriteAddress(uint32_t count, dma_addr_t *paStart)
 {
-	return cmdq_core_alloc_write_address(count, paStart, NULL);
+	return PTR_ERR_OR_ZERO(cmdq_core_alloc_write_address(count, paStart,
+		NULL));
 }
 
-int cmdqCoreAllocWriteAddressForFile(uint32_t count, dma_addr_t *paStart,
-	struct cmdqFileNodeStruct *file_node)
+/*
+ * The ALLOC_WRITE_ADDRESS ioctl publishes the new buffer once its address
+ * reached userspace, or cancels it.  Until then nothing else frees it: reads,
+ * frees and reaping all skip an unpublished buffer, and the file cannot close.
+ */
+WriteAddrStruct *cmdqCoreAllocWriteAddressForFile(uint32_t count,
+	dma_addr_t *paStart, struct cmdqFileNodeStruct *file_node)
 {
-	if (!file_node || READ_ONCE(file_node->closing))
-		return -EBADF;
 	return cmdq_core_alloc_write_address(count, paStart, file_node);
 }
 
-int cmdqCorePublishWriteAddressForFile(dma_addr_t paStart,
-	struct cmdqFileNodeStruct *file_node)
+void cmdqCorePublishWriteAddressForFile(WriteAddrStruct *entry)
 {
-	WriteAddrStruct *entry;
 	unsigned long flags;
-	int status = -EINVAL;
-
-	if (!file_node)
-		return -EINVAL;
 
 	spin_lock_irqsave(&gCmdqWriteAddrLock, flags);
-	list_for_each_entry(entry, &gCmdqContext.writeAddrList, list_node) {
-		if (entry->fileNode != file_node || entry->pendingFree ||
-		    entry->published ||
-		    lower_32_bits(entry->pa) != lower_32_bits(paStart))
-			continue;
-		entry->published = true;
-		status = 0;
-		break;
-	}
+	entry->published = true;
 	spin_unlock_irqrestore(&gCmdqWriteAddrLock, flags);
-	return status;
 }
 
-int cmdqCoreCancelWriteAddressForFile(dma_addr_t paStart,
-	struct cmdqFileNodeStruct *file_node)
+void cmdqCoreCancelWriteAddressForFile(WriteAddrStruct *entry)
 {
-	WriteAddrStruct *entry;
 	unsigned long flags;
-	LIST_HEAD(free_list);
-	int status = -EINVAL;
 
-	if (!file_node)
-		return -EINVAL;
-
-	/*
-	 * An unpublished allocation has not completed its UAPI transaction and
-	 * cannot legitimately be referenced by a submitted command.  Roll it
-	 * back independently of unrelated jobs owned by the same open file.
-	 */
 	spin_lock_irqsave(&gCmdqWriteAddrLock, flags);
-	list_for_each_entry(entry, &gCmdqContext.writeAddrList, list_node) {
-		if (entry->fileNode != file_node || entry->published ||
-		    entry->pendingFree ||
-		    lower_32_bits(entry->pa) != lower_32_bits(paStart))
-			continue;
-		entry->pendingFree = true;
-		list_move_tail(&entry->list_node, &free_list);
-		status = 0;
-		break;
-	}
+	list_del_init(&entry->list_node);
 	spin_unlock_irqrestore(&gCmdqWriteAddrLock, flags);
-	cmdq_core_free_write_address_list(&free_list);
-	return status;
+	cmdq_core_free_write_address_entry(entry);
 }
 
+/* Every buffer holds at least one value: count >= 1 */
 static bool cmdq_core_write_address_offset(WriteAddrStruct *entry,
 	dma_addr_t pa, bool user_access, size_t *offset)
 {
 	dma_addr_t base;
 	dma_addr_t target;
 
-	if (entry->bytes < sizeof(uint32_t))
-		return false;
 	base = user_access ? lower_32_bits(entry->pa) : entry->pa;
 	target = user_access ? lower_32_bits(pa) : pa;
 	if (target < base || target - base > entry->bytes - sizeof(uint32_t))
@@ -9027,8 +8833,6 @@ static int cmdq_core_read_write_address(dma_addr_t pa, uint32_t *value,
 	size_t offset;
 	int status = -EINVAL;
 
-	if (!value)
-		return -EINVAL;
 	spin_lock_irqsave(&gCmdqWriteAddrLock, flags);
 	list_for_each_entry(entry, &gCmdqContext.writeAddrList, list_node) {
 		if (!entry->published || entry->fileNode != file_node)
@@ -9059,8 +8863,6 @@ uint32_t cmdqCoreReadWriteAddress(dma_addr_t pa)
 int cmdqCoreReadWriteAddressForFile(dma_addr_t pa, uint32_t *value,
 	struct cmdqFileNodeStruct *file_node, uint64_t submission_sequence)
 {
-	if (!file_node)
-		return -EINVAL;
 	return cmdq_core_read_write_address(pa, value, file_node, true,
 		submission_sequence);
 }
@@ -9072,10 +8874,9 @@ uint32_t cmdqCoreWriteWriteAddress(dma_addr_t pa, uint32_t value)
 	size_t offset;
 	bool found = false;
 
+	/* Kernel buffers are published at once, freed at once, and PAs are unique */
 	spin_lock_irqsave(&gCmdqWriteAddrLock, flags);
 	list_for_each_entry(entry, &gCmdqContext.writeAddrList, list_node) {
-		if (!entry->published || entry->pendingFree || entry->fileNode)
-			continue;
 		if (!cmdq_core_write_address_offset(entry, pa, false, &offset))
 			continue;
 		put_unaligned(value,
@@ -9192,8 +8993,6 @@ int cmdqCoreFreeWriteAddress(dma_addr_t paStart)
 int cmdqCoreFreeWriteAddressForFile(dma_addr_t paStart,
 	struct cmdqFileNodeStruct *file_node)
 {
-	if (!file_node)
-		return -EINVAL;
 	return cmdq_core_free_write_address(paStart, file_node, true);
 }
 

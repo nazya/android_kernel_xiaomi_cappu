@@ -861,19 +861,14 @@ extern "C" {
 
 
 /* File-bound opaque userspace job publication and one-waiter ownership. */
-	int cmdq_core_prepare_user_job(TaskStruct *pTask,
-		struct cmdqFileNodeStruct *file_node, uint64_t *handle);
-	int cmdq_core_publish_user_job(TaskStruct *pTask,
-		struct cmdqFileNodeStruct *file_node, uint64_t handle);
-	int cmdq_core_cancel_user_job(TaskStruct *pTask,
-		struct cmdqFileNodeStruct *file_node, uint64_t handle);
+	void cmdq_core_prepare_user_job(TaskStruct *pTask, uint64_t *handle);
+	void cmdq_core_publish_user_job(TaskStruct *pTask);
+	void cmdq_core_cancel_user_job(TaskStruct *pTask);
 	int cmdq_core_claim_user_job(struct cmdqFileNodeStruct *file_node,
 		uint64_t handle, uint32_t reg_capacity,
 		struct cmdqUserJobInfo *info, TaskStruct **pTaskOut);
-	int cmdq_core_unclaim_user_job(TaskStruct *pTask,
-		struct cmdqFileNodeStruct *file_node, uint64_t handle);
-	int cmdq_core_consume_user_job(TaskStruct *pTask,
-		struct cmdqFileNodeStruct *file_node, uint64_t handle);
+	void cmdq_core_unclaim_user_job(TaskStruct *pTask);
+	void cmdq_core_consume_user_job(TaskStruct *pTask);
 
 /**
  * Immediately clear CMDQ event to 0 with CPU
@@ -990,12 +985,10 @@ extern "C" {
 	int cmdqCoreFreeWriteAddress(dma_addr_t paStart);
 	uint32_t cmdqCoreReadWriteAddress(dma_addr_t pa);
 	uint32_t cmdqCoreWriteWriteAddress(dma_addr_t pa, uint32_t value);
-	int cmdqCoreAllocWriteAddressForFile(uint32_t count, dma_addr_t *paStart,
-		struct cmdqFileNodeStruct *file_node);
-	int cmdqCorePublishWriteAddressForFile(dma_addr_t paStart,
-		struct cmdqFileNodeStruct *file_node);
-	int cmdqCoreCancelWriteAddressForFile(dma_addr_t paStart,
-		struct cmdqFileNodeStruct *file_node);
+	WriteAddrStruct *cmdqCoreAllocWriteAddressForFile(uint32_t count,
+		dma_addr_t *paStart, struct cmdqFileNodeStruct *file_node);
+	void cmdqCorePublishWriteAddressForFile(WriteAddrStruct *entry);
+	void cmdqCoreCancelWriteAddressForFile(WriteAddrStruct *entry);
 	int cmdqCoreFreeWriteAddressForFile(dma_addr_t paStart,
 		struct cmdqFileNodeStruct *file_node);
 	int cmdqCoreReadWriteAddressForFile(dma_addr_t pa, uint32_t *value,
@@ -1012,15 +1005,14 @@ extern "C" {
 	void cmdq_core_add_consume_task(void);
 
 	void cmdq_core_init_file_node(struct cmdqFileNodeStruct *file_node);
-	int cmdq_core_begin_file_submission(struct cmdqFileNodeStruct *file_node,
+	void cmdq_core_begin_file_submission(struct cmdqFileNodeStruct *file_node,
 		struct cmdqFileSubmission *submission);
 	void cmdq_core_bind_file_submission(
 		struct cmdqFileSubmission *submission, TaskStruct *task);
-	int cmdq_core_retain_task_submission(
+	void cmdq_core_retain_task_submission(
 		struct cmdqFileNodeStruct *file_node, TaskStruct *task,
 		struct cmdqFileSubmission *submission);
-	void cmdq_core_end_file_submission(struct cmdqFileSubmission *submission,
-		TaskStruct *task);
+	void cmdq_core_end_file_submission(struct cmdqFileSubmission *submission);
 	void cmdq_core_release_task_by_file_node(struct cmdqFileNodeStruct *file_node);
 
 	void cmdq_core_longstring_init(char *buf, uint32_t *offset, int32_t *maxSize);

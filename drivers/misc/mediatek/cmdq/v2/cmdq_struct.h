@@ -21,7 +21,6 @@ struct cmdqFileSubmission {
 	struct list_head listEntry;
 	struct cmdqFileNodeStruct *fileNode;
 	u64 sequence;
-	bool active;
 };
 
 typedef struct cmdqFileNodeStruct {
@@ -29,7 +28,6 @@ typedef struct cmdqFileNodeStruct {
 	pid_t userTGID;
 	struct kref ref;
 	bool closing;
-	unsigned int inflightTasks;
 	u64 nextSubmissionSequence;
 	struct list_head taskList;
 	struct list_head submissionList;
