@@ -149,14 +149,6 @@ static int Read_AWB_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int
 	return ret;
 }
 
-static kal_bool Read_LSC_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
-{
-
-	return KAL_TRUE;
-
-}
-
-
 static int ReadOtp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
 	unsigned int i;
@@ -291,10 +283,8 @@ static int iReadData(kal_uint16 ui4_offset, unsigned int ui4_length, unsigned ch
 		return ReadOtp(ui4_offset, pinputdata, ui4_length);
 	if (ui4_length == 4)	/* awb */
 		return Read_AWB_Otp(ui4_offset, pinputdata, ui4_length);
-	if (ui4_length == 2)	/* af */
-		return Read_AF_Otp(ui4_offset, pinputdata, ui4_length);
-	Read_LSC_Otp(ui4_offset, pinputdata, ui4_length);	/* lsc */
-	return 0;
+	/* af: the ioctl lets only 1, 2 and 4 bytes through */
+	return Read_AF_Otp(ui4_offset, pinputdata, ui4_length);
 }
 
 #ifdef CONFIG_COMPAT
