@@ -113,6 +113,7 @@ struct akm09912_i2c_data {
 	atomic_t layout;
 	atomic_t trace;
 	struct hwmsen_convert cvt;
+	u8 asa[3];	/* sensitivity adjustment of each axis, from the fuse ROM */
 };
 /*----------------------------------------------------------------------------*/
 #ifdef CONFIG_OF
@@ -2137,16 +2138,55 @@ static int akm09912_m_open_report_data(int open)
 	return 0;
 }
 
+/*
+ * Report the field the chip measured, in 1/100 uT (the HAL divides by
+ * CONVERT_M_DIV) on the device axes; the sensors HAL calibrates it.
+ * akm09912_m_enable() starts the first single measurement, and each call
+ * starts the next one, so the result is ready by the next poll.
+ */
 static int akm09912_m_get_data(int *x, int *y, int *z, int *status)
 {
-	mutex_lock(&sensor_data_mutex);
+	struct akm09912_i2c_data *data = i2c_get_clientdata(this_client);
+	char buf[SENSOR_DATA_SIZE];
+	int mag[3];
+	int raw;
+	int i;
+	long err;
 
-	*x = sensor_data[5] * CONVERT_M;
-	*y = sensor_data[6] * CONVERT_M;
-	*z = sensor_data[7] * CONVERT_M;
-	*status = sensor_data[8];
+	err = AKECS_GetData(buf, SENSOR_DATA_SIZE);
+	if (!err)
+		err = AKECS_SetMode_SngMeasure();
+	if (err)
+		return -EIO;
 
-	mutex_unlock(&sensor_data_mutex);
+	for (i = 0; i < 3; i++) {
+		raw = (s16)((u8)buf[1 + 2 * i] | ((u8)buf[2 + 2 * i] << 8));
+		/* 0.15 uT per LSB, adjusted by (ASA + 128) / 256 */
+		mag[data->cvt.map[i]] = data->cvt.sign[i] * raw * 15 *
+			(data->asa[i] + 128) / 256;
+	}
+	*x = mag[0];
+	*y = mag[1];
+	*z = mag[2];
+	/* ST2 HOFL: the field exceeded the range, as next to a magnet */
+	*status = (u8)buf[8] & 0x08 ? SENSOR_STATUS_UNRELIABLE :
+		SENSOR_STATUS_ACCURACY_HIGH;
+	return 0;
+}
+
+static int akm09912_read_asa(u8 asa[3])
+{
+	char buf[AKM_SENSOR_CONF_SIZE];
+	long err;
+
+	err = AKECS_SetMode(AK09912_MODE_FUSE_ACCESS);
+	if (err)
+		return -EIO;
+	buf[0] = AK09912_FUSE_ASAX;
+	err = AKI2C_RxData(buf, AKM_SENSOR_CONF_SIZE);
+	if (AKECS_SetMode(AK09912_MODE_POWERDOWN) || err)
+		return -EIO;
+	memcpy(asa, buf, AKM_SENSOR_CONF_SIZE);
 	return 0;
 }
 
@@ -2197,6 +2237,14 @@ static int akm09912_i2c_probe(struct i2c_client *client,
 		    ("AKM09912 akm09912_probe: check device connect error\n");
 		goto exit_init_failed;
 	}
+
+	err = akm09912_read_asa(data->asa);
+	if (err < 0) {
+		MAG_PR_ERR("AKM09912 akm09912_probe: fuse ROM read error\n");
+		goto exit_init_failed;
+	}
+	/* direction comes from our DT and is one of the eight conversions */
+	hwmsen_get_convert(data->hw->direction, &data->cvt);
 
 	/* Register sysfs attribute */
 	err =
