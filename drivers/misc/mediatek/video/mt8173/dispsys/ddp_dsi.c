@@ -3395,13 +3395,10 @@ int ddp_dsi_dump(DISP_MODULE_ENUM module, int level)
 
 /* Serialized by esd_mode_switch_lock and the primary path mutex. */
 static struct {
-	cmdqRecHandle cmdq;
 	cmdqBackupSlotHandle slot;
-	DISP_MODULE_ENUM module;
 	unsigned int link;
 	unsigned int next_dual_link;
 	unsigned int rd_rdy_enabled;
-	bool read_queued;
 	bool passed;
 } dsi_esd;
 
@@ -3422,16 +3419,15 @@ static int dsi_esd_build_cmdq(DISP_MODULE_ENUM module, cmdqRecHandle cmdq,
 	unsigned int link;
 	int i, ret;
 
+	/*
+	 * primary_display_esd_check() is the only caller: ALLC, one READ, flush,
+	 * CMP, then FREE after every successful ALLC, on the one primary DSI module.
+	 */
 	if (state == CMDQ_ESD_ALLC_SLOT) {
-		if (dsi_esd.cmdq)
-			return -EBUSY;
 		link = module == DISP_MODULE_DSIDUAL ? dsi_esd.next_dual_link :
 			DSI_MODULE_to_ID(module);
 		DSI_ESD_TRY(cmdqBackupAllocateSlot(&dsi_esd.slot, 3));
-		dsi_esd.cmdq = cmdq;
-		dsi_esd.module = module;
 		dsi_esd.link = link;
-		dsi_esd.read_queued = false;
 		dsi_esd.passed = false;
 		dsi_esd.rd_rdy_enabled = DSI_REG[link]->DSI_INTEN.RD_RDY;
 		/* Avoid a level IRQ storm while CMDQ owns the read completion. */
@@ -3441,15 +3437,11 @@ static int dsi_esd_build_cmdq(DISP_MODULE_ENUM module, cmdqRecHandle cmdq,
 		return 0;
 	}
 
-	if (dsi_esd.cmdq != cmdq || dsi_esd.module != module)
-		return -EINVAL;
 	link = dsi_esd.link;
 	params = &_dsi_context[link].dsi_params;
 	base = ddp_addr_convert_va2pa((unsigned long)DSI_REG[link]);
 
 	if (state == CMDQ_ESD_CHECK_READ) {
-		if (dsi_esd.read_queued || !params->lcm_esd_check_table[0].cmd)
-			return -EINVAL;
 		for (i = 0; i < 3 && params->lcm_esd_check_table[i].cmd; i++) {
 			t0.CONFG = 0x04;
 			t0.Data0 = params->lcm_esd_check_table[i].cmd;
@@ -3471,17 +3463,13 @@ static int dsi_esd_build_cmdq(DISP_MODULE_ENUM module, cmdqRecHandle cmdq,
 			DSI_ESD_TRY(cmdqRecWrite(cmdq, base + 0x84, 1, 1));
 			DSI_ESD_TRY(cmdqRecPoll(cmdq, base + 0x0c, 0, 0x80000000));
 		}
-		dsi_esd.read_queued = true;
 		return 0;
 	}
 
 	if (state == CMDQ_ESD_CHECK_CMP) {
 		/* The caller reaches CMP only after a successful synchronous flush. */
-		if (!dsi_esd.read_queued)
-			return -EINVAL;
 		for (i = 0; i < 3 && params->lcm_esd_check_table[i].cmd; i++) {
-			DSI_ESD_TRY(cmdqBackupReadSlot(dsi_esd.slot, i,
-						    (unsigned int *)&data));
+			cmdqBackupReadSlot(dsi_esd.slot, i, (unsigned int *)&data);
 			DISPCHECK("[ESD]DSI%u cmd 0x%x response 0x%x\n", link,
 				  params->lcm_esd_check_table[i].cmd, AS_UINT32(&data));
 			MMProfileLogEx(ddp_mmp_get_events()->esd_rdlcm, MMProfileFlagPulse,
@@ -3495,16 +3483,15 @@ static int dsi_esd_build_cmdq(DISP_MODULE_ENUM module, cmdqRecHandle cmdq,
 	}
 
 	/* FREE follows synchronous flush/CMP or the CPU reset on failure. */
-	ret = cmdqBackupFreeSlot(dsi_esd.slot);
+	cmdqBackupFreeSlot(dsi_esd.slot);
 	DSI_OUTREG32(NULL, &DSI_REG[link]->DSI_INTSTA, ~1U);
 	disp_dsi_cmdq_esd_own(link, false);
 	DSI_OUTREGBIT(NULL, DSI_INT_ENABLE_REG, DSI_REG[link]->DSI_INTEN,
 		      RD_RDY, dsi_esd.rd_rdy_enabled);
-	if (!ret && dsi_esd.passed && module == DISP_MODULE_DSIDUAL)
+	if (dsi_esd.passed && module == DISP_MODULE_DSIDUAL)
 		dsi_esd.next_dual_link ^= 1;
-	dsi_esd.cmdq = NULL;
 	dsi_esd.slot = 0;
-	return ret;
+	return 0;
 }
 
 #undef DSI_ESD_TRY

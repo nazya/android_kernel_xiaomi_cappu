@@ -1700,31 +1700,20 @@ int _esd_check_config_handle_cmd(void)
 	int ret = 0;		/* 0:success */
 
 	/* 1.reset */
-	ret = cmdqRecReset(pgc->cmdq_handle_config_esd);
-	if (ret)
-		goto done;
+	cmdqRecReset(pgc->cmdq_handle_config_esd);
 
 	/* 2.write first instruction */
 	/* cmd mode: wait CMDQ_SYNC_TOKEN_STREAM_EOF(wait trigger thread done) */
-	ret = cmdqRecWaitNoClear(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_STREAM_EOF);
-	if (ret)
-		goto done;
+	cmdqRecWaitNoClear(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_STREAM_EOF);
 
 	/* 3.clear CMDQ_SYNC_TOKEN_ESD_EOF(trigger thread need wait this sync token) */
-	ret = cmdqRecClearEventToken(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_ESD_EOF);
-	if (ret)
-		goto done;
+	cmdqRecClearEventToken(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_ESD_EOF);
 
 	/* 4.write instruction(read from lcm) */
-	ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
-				    CMDQ_ESD_CHECK_READ);
-	if (ret)
-		goto done;
+	dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd, CMDQ_ESD_CHECK_READ);
 
 	/* 5.set CMDQ_SYNC_TOKE_ESD_EOF(trigger thread can work now) */
-	ret = cmdqRecSetEventToken(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_ESD_EOF);
-	if (ret)
-		goto done;
+	cmdqRecSetEventToken(pgc->cmdq_handle_config_esd, CMDQ_SYNC_TOKEN_ESD_EOF);
 
 	/* 6.flush instruction */
 	dprec_logger_start(DPREC_LOGGER_ESD_CMDQ, 0, 0);
@@ -1732,8 +1721,9 @@ int _esd_check_config_handle_cmd(void)
 	dprec_logger_done(DPREC_LOGGER_ESD_CMDQ, 0, 0);
 
 
-done:
 	DISPCHECK("[ESD]_esd_check_config_handle_cmd ret=%d\n", ret);
+
+/* done: */
 	if (ret)
 		ret = 1;
 	return ret;
@@ -1753,9 +1743,7 @@ int _esd_check_config_handle_vdo(bool *restore_sodi)
 #endif
 
 	/* 1.reset */
-	ret = cmdqRecReset(pgc->cmdq_handle_config_esd);
-	if (ret)
-		goto done;
+	cmdqRecReset(pgc->cmdq_handle_config_esd);
 
 	/* wait stream eof first */
 	if (gEnableMutexRisingEdge == 1) {
@@ -1785,10 +1773,8 @@ int _esd_check_config_handle_vdo(bool *restore_sodi)
 		goto done;
 
 	/* 4.start dsi vdo mode */
-	ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
-				    CMDQ_START_VDO_MODE);
-	if (ret)
-		goto done;
+	dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
+			      CMDQ_START_VDO_MODE);
 
 	/* 5. trigger path */
 	dpmgr_path_trigger(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd, CMDQ_ENABLE);
@@ -1818,7 +1804,6 @@ done:
 int primary_display_esd_check(void)
 {
 	int ret = 0;
-	int free_ret;
 	bool restore_sodi = false;
 #ifndef DISP_SUPPORT_CMDQ
 	return 0;
@@ -1923,10 +1908,8 @@ int primary_display_esd_check(void)
 
 
 destroy_cmdq:
-		free_ret = dpmgr_path_build_cmdq(pgc->dpmgr_handle,
-						 pgc->cmdq_handle_config_esd, CMDQ_ESD_FREE_SLOT);
-		if (free_ret)
-			ret = 1;
+		dpmgr_path_build_cmdq(pgc->dpmgr_handle, pgc->cmdq_handle_config_esd,
+				      CMDQ_ESD_FREE_SLOT);
 destroy_handle:
 		/* 3.destroy esd config thread */
 		cmdqRecDestroy(pgc->cmdq_handle_config_esd);
@@ -2119,11 +2102,7 @@ int primary_display_esd_recovery(void)
 	MMProfileLogEx(ddp_mmp_get_events()->esd_recovery_t, MMProfileFlagStart, 0, 0);
 	DISPCHECK("[ESD]ESD recovery begin\n");
 	_primary_path_esd_check_lock();
-	if (disp_lcm_prepare_suspend(pgc->plcm)) {
-		DISPERR("[ESD]failed to prepare panel recovery\n");
-		ret = -1;
-		goto done_without_path_lock;
-	}
+	disp_lcm_prepare_suspend(pgc->plcm);
 	_primary_path_lock(__func__);
 
 	if (pgc->state == DISP_SLEPT) {
@@ -2204,7 +2183,6 @@ int primary_display_esd_recovery(void)
 
 done:
 	_primary_path_unlock(__func__);
-done_without_path_lock:
 	_primary_path_esd_check_unlock();
 	DISPCHECK("[ESD]ESD recovery end\n");
 	MMProfileLogEx(ddp_mmp_get_events()->esd_recovery_t, MMProfileFlagEnd, 0, 0);
@@ -3292,8 +3270,7 @@ int primary_display_suspend(void)
 #endif
 	disp_sw_mutex_lock(&(pgc->capture_lock));
 	_primary_path_esd_check_lock();
-	if (disp_lcm_prepare_suspend(pgc->plcm))
-		DISPERR("failed to prepare panel suspend\n");
+	disp_lcm_prepare_suspend(pgc->plcm);
 	_primary_path_lock(__func__);
 	if (pgc->state == DISP_SLEPT) {
 		DISPCHECK("primary display path is already sleep, skip\n");

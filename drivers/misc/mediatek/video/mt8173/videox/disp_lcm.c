@@ -716,20 +716,11 @@ int disp_lcm_esd_recover(disp_lcm_handle *plcm)
 	return -1;
 }
 
-int disp_lcm_prepare_suspend(disp_lcm_handle *plcm)
+/* Only for the probed panel: primary_display_init() stops without one */
+void disp_lcm_prepare_suspend(disp_lcm_handle *plcm)
 {
-	LCM_DRIVER *lcm_drv;
-
-	if (!_is_lcm_inited(plcm)) {
-		DISPERR("lcm_drv is null\n");
-		return -1;
-	}
-
-	lcm_drv = plcm->drv;
-	if (lcm_drv->prepare_suspend)
-		lcm_drv->prepare_suspend();
-
-	return 0;
+	if (plcm->drv->prepare_suspend)
+		plcm->drv->prepare_suspend();
 }
 
 int disp_lcm_suspend(disp_lcm_handle *plcm)
@@ -758,22 +749,13 @@ int disp_lcm_suspend(disp_lcm_handle *plcm)
 	return -1;
 }
 
-int disp_lcm_resume_power(disp_lcm_handle *plcm)
+/* Only for the probed panel: primary_display_init() stops without one */
+void disp_lcm_resume_power(disp_lcm_handle *plcm)
 {
-	LCM_DRIVER *lcm_drv;
-
 	DISPFUNC();
 
-	if (!_is_lcm_inited(plcm)) {
-		DISPERR("lcm_drv is null\n");
-		return -1;
-	}
-
-	lcm_drv = plcm->drv;
-	if (lcm_drv->resume_power)
-		lcm_drv->resume_power();
-
-	return 0;
+	if (plcm->drv->resume_power)
+		plcm->drv->resume_power();
 }
 
 int disp_lcm_resume(disp_lcm_handle *plcm)

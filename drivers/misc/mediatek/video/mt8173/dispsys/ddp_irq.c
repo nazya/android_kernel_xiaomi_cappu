@@ -35,7 +35,6 @@ static wait_queue_head_t disp_irq_log_wq;
 static int disp_irq_log_module;
 
 static int irq_init;
-static bool irq_requested[DISP_MODULE_NUM];
 static bool dsi_cmdq_esd_owned[2];
 
 /* Sleepable ESD context, with the primary path locked and RD_RDY IRQ masked. */
@@ -50,8 +49,8 @@ void disp_dsi_cmdq_esd_own(unsigned int index, bool owned)
 	 * W0C clear, drain stale status snapshots while ownership is still true.
 	 */
 	smp_mb();
-	if (irq_requested[module])
-		synchronize_irq(ddp_irq_map[module]);
+	/* DSI1 has no handler; synchronize_irq() then returns at once */
+	synchronize_irq(ddp_irq_map[module]);
 	if (!owned)
 		WRITE_ONCE(dsi_cmdq_esd_owned[index], false);
 }
@@ -585,7 +584,6 @@ int ddp_irq_init(void)
 				       i, ddp_irq_map[i]);
 				return ret;
 			}
-			irq_requested[i] = true;
 		}
 	}
 
