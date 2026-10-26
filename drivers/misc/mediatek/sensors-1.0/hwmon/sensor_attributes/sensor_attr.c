@@ -91,12 +91,18 @@ int sensor_attr_register(struct sensor_attr_t *misc)
 	dev = MKDEV(sensor_attr_major, misc->minor);
 	misc->this_device = device_create(sensor_attr_class, misc->parent, dev,
 					  misc, "%s", misc->name);
-	if (IS_ERR(misc->this_device))
+	if (IS_ERR(misc->this_device)) {
+		err = PTR_ERR(misc->this_device);
 		goto out;
+	}
+	err = sensor_event_register(misc->minor);
+	if (err) {
+		device_destroy(sensor_attr_class, dev);
+		goto out;
+	}
 	list_add(&misc->list, &sensor_attr_list);
 	mutex_unlock(&sensor_attr_mtx);
-	err = sensor_event_register(misc->minor);
-	return err;
+	return 0;
  out:
 	mutex_unlock(&sensor_attr_mtx);
 	return err;
