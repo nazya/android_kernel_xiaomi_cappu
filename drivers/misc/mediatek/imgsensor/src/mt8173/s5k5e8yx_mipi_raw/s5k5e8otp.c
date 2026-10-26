@@ -67,14 +67,11 @@ static dev_t g_CAM_CALdevno = MKDEV(CAM_CAL_DEV_MAJOR_NUMBER, 0);
 static struct cdev *g_pCAM_CAL_CharDrv;
 static struct class *CAM_CAL_class;
 static atomic_t g_CAM_CALatomic;
-static kal_uint16 read_cmos_sensor_otp(kal_uint32 addr)
+static int read_otp_byte(kal_uint16 addr, u8 *value)
 {
-	kal_uint16 get_byte = 0;
-
 	char pu_send_cmd[2] = {(char)(addr >> 8), (char)(addr & 0xFF) };
-	iReadRegI2C(pu_send_cmd, 2, (u8 *)&get_byte, 1, S5K5E8OTP_DEVICE_ID);
 
-	return get_byte;
+	return iReadRegI2C(pu_send_cmd, 2, value, 1, S5K5E8OTP_DEVICE_ID) ? -EIO : 0;
 }
 
 static void write_cmos_sensor_otp(kal_uint32 addr, kal_uint32 para)
@@ -89,7 +86,7 @@ static void write_cmos_sensor_otp(kal_uint32 addr, kal_uint32 para)
 ********************************************************************************/
 static int iReadCAM_CAL(u16 a_u2Addr, u8 *a_puBuff)
 {
-	int errorValue = -1;
+	int errorValue = -EIO;
 	int  i4RetValue = 0;
 	char puReadCmd[2] = {(char)(a_u2Addr >> 8), (char)(a_u2Addr & 0xFF) };
 
@@ -116,23 +113,21 @@ static int iReadCAM_CAL(u16 a_u2Addr, u8 *a_puBuff)
 }
 
 
-static kal_uint8 Read_AF_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
+static int Read_AF_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
-	u8 readbuff = 0, i;
+	unsigned int i;
+	int ret = 0;
 
-	for (i = 0; i < buffersize; i++) {
-		iReadCAM_CAL((address+i), &readbuff);
-		*(iBuffer+i) = readbuff;
-		CAM_CALDB("read af data[i] %d=0x%x\n", i, iBuffer[i]);
-	}
-
-	return KAL_TRUE;
+	for (i = 0; !ret && i < buffersize; i++)
+		ret = iReadCAM_CAL(address + i, iBuffer + i);
+	return ret;
 }
 
 
-static kal_uint8 Read_AWB_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
+static int Read_AWB_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
-	u8 i;
+	unsigned int i;
+	int ret = 0;
 
 	write_cmos_sensor_otp(0x0100, 0x00);
 	mdelay(10);
@@ -144,18 +139,14 @@ static kal_uint8 Read_AWB_Otp(kal_uint16 address, unsigned char *iBuffer, unsign
 
 	mdelay(1);
 
-	for (i = 0; i < buffersize; i++) {
-		*(iBuffer+i) = read_cmos_sensor_otp(address+i);
-		CAM_CALDB("read awb data[i] %d=0x%x\n", i, iBuffer[i]);
-	}
+	for (i = 0; !ret && i < buffersize; i++)
+		ret = read_otp_byte(address + i, iBuffer + i);
 	write_cmos_sensor_otp(0x0A00, 0x04);
 	write_cmos_sensor_otp(0x0A00, 0x00);
 	mdelay(10);
 	write_cmos_sensor_otp(0x0100, 0x01);
 
-
-	return KAL_TRUE;
-
+	return ret;
 }
 
 static kal_bool Read_LSC_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
@@ -166,11 +157,11 @@ static kal_bool Read_LSC_Otp(kal_uint16 address, unsigned char *iBuffer, unsigne
 }
 
 
-static void ReadOtp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
+static int ReadOtp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
 {
-	kal_uint16 i = 0;
-/*		u8 readbuff;*/
-/*		int ret ;*/
+	unsigned int i;
+	int ret = 0;
+
 	CAM_CALDB("[CAM_CAL]ENTER address:0x%x buffersize:%d\n ", address, buffersize);
 
 		write_cmos_sensor_otp(0x0100, 0x00);
@@ -182,16 +173,14 @@ static void ReadOtp(kal_uint16 address, unsigned char *iBuffer, unsigned int buf
 		mdelay(100);
 
 
-		if (1) {
-			for (i = 0; i < buffersize; i++) {
-				*(iBuffer+i) = read_cmos_sensor_otp(address+i);
-			}
-		}
+		for (i = 0; !ret && i < buffersize; i++)
+			ret = read_otp_byte(address + i, iBuffer + i);
 		write_cmos_sensor_otp(0x0A00, 0x04);
 		write_cmos_sensor_otp(0x0A00, 0x00);
 		mdelay(10);
 		write_cmos_sensor_otp(0x0100, 0x01);
 
+		return ret;
 }
 
 /*
@@ -213,13 +202,6 @@ static bool otp_cached;
 static u8 otp_layout;
 static u8 otp_awb_layout;
 static u8 otp_awb[OTP_AWB_SIZE];
-
-static int read_otp_byte(kal_uint16 addr, u8 *value)
-{
-	char pu_send_cmd[2] = {(char)(addr >> 8), (char)(addr & 0xFF) };
-
-	return iReadRegI2C(pu_send_cmd, 2, value, 1, S5K5E8OTP_DEVICE_ID);
-}
 
 /*
  * Called only by open(), which kd_sensorlist runs under kdCam_Mutex, right
@@ -305,16 +287,13 @@ static int iReadData(kal_uint16 ui4_offset, unsigned int ui4_length, unsigned ch
 		CAM_CALDB("[CAM_CAL] 0x%x from the cache\n", ui4_offset);
 		return 0;
 	}
-	if (ui4_length == 1) {/* layout check */
-		ReadOtp(ui4_offset, pinputdata, ui4_length);
-	} else if (ui4_length == 4) {/* awb  */
-		Read_AWB_Otp(ui4_offset, pinputdata, ui4_length);
-	} else if (ui4_length == 2) {/* af */
-		Read_AF_Otp(ui4_offset, pinputdata, ui4_length);
-	} else {/*lsc */
-		Read_LSC_Otp(ui4_offset, pinputdata, ui4_length);
-	}
-
+	if (ui4_length == 1)	/* layout check */
+		return ReadOtp(ui4_offset, pinputdata, ui4_length);
+	if (ui4_length == 4)	/* awb */
+		return Read_AWB_Otp(ui4_offset, pinputdata, ui4_length);
+	if (ui4_length == 2)	/* af */
+		return Read_AF_Otp(ui4_offset, pinputdata, ui4_length);
+	Read_LSC_Otp(ui4_offset, pinputdata, ui4_length);	/* lsc */
 	return 0;
 }
 

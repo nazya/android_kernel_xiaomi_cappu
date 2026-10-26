@@ -75,7 +75,7 @@
 #define LSC_addr  23
 u8 OTPData[OTP_SIZE];
 extern  int iReadData(unsigned int  ui4_offset, unsigned int  ui4_length, unsigned char *pinputdata);
-extern  int s5k3l8_iReadData(unsigned int  ui4_offset, unsigned int  ui4_length, unsigned char *pinputdata);
+extern void s5k3l8_otp_cache_lsc(kal_uint16 address);
 extern int iBurstWriteReg(u8 *pData, u32 bytes, u16 i2cId);
 static DEFINE_SPINLOCK(imgsensor_drv_lock);
 
@@ -1435,8 +1435,7 @@ static kal_uint32 get_imgsensor_id(UINT32 *sensor_id)
 				/*read_imx135_otp_mtk_fmt();*/
 #endif
 					LOG_INF("i2c write id: 0x%x, ReadOut sensor id: 0x%x, imgsensor_info.sensor_id:0x%x.\n", imgsensor.i2c_write_id, *sensor_id, imgsensor_info.sensor_id);
-					/*iReadData(LSC_addr, OTP_SIZE, OTPData);*/
-					s5k3l8_iReadData(LSC_addr, OTP_SIZE, OTPData);
+					s5k3l8_otp_cache_lsc(LSC_addr);
 					return ERROR_NONE;
 			}
 			LOG_INF("Read sensor id fail, i2c write id: 0x%x, ReadOut sensor id: 0x%x, imgsensor_info.sensor_id:0x%x.\n", imgsensor.i2c_write_id, *sensor_id, imgsensor_info.sensor_id);

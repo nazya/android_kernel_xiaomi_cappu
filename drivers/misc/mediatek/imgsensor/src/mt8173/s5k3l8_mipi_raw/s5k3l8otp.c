@@ -48,7 +48,8 @@ static DEFINE_SPINLOCK(g_CAM_CALLock); /* for SMP*/
 extern u8 OTPData[];
 /* Size of OTPData[], the LSC table s5k3l8mipiraw_Sensor.c caches */
 #define OTP_DATA_SIZE 1868
-int otp_flag = 0;
+/* OTPData[] holds the whole LSC table, see s5k3l8_otp_cache_lsc() */
+static bool otp_lsc_cached;
 /*******************************************************************************
 *
 ********************************************************************************/
@@ -100,86 +101,51 @@ static int iReadCAM_CAL(u16 a_u2Addr, u8 *a_puBuff)
 	if (i4RetValue != 2) {
 		CAM_CALDB("[CAM_CAL] I2C send read address failed!! i4RetValue is %d!!\n", i4RetValue);
 		CAM_CALDB("[CAM_CAL] I2C send failed, addr = %d, data = %d !! \n", a_u2Addr, *a_puBuff);
-		return -EFAULT;
+		return -EIO;
 	}
 
 	i4RetValue = i2c_master_recv(g_pstI2Cclient, (char *)a_puBuff, 1);
 	CAM_CALDB("[CAM_CAL][iReadCAM_CAL] Read 0x%x=0x%x \n", a_u2Addr, a_puBuff[0]);
 	if (i4RetValue != 1) {
 		CAM_CALDB("[CAM_CAL] I2C read data failed!! \n");
-		return -EFAULT;
+		return -EIO;
 	}
 	return 0;
 }
 
 
-static kal_uint8 Read_AF_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
+/* Read len OTP bytes from addr, stopping at the first failed transfer */
+static int read_otp(kal_uint16 addr, unsigned char *buf, unsigned int len)
 {
-	u8 readbuff = 0, readbuff1 = 0;
-	iReadCAM_CAL(address, &readbuff);
-	iReadCAM_CAL((address+1), &readbuff1);
-	*iBuffer = readbuff1;
-	*(iBuffer + 1) = readbuff;
+	unsigned int i;
+	int ret = 0;
 
-	return KAL_TRUE;
-
+	for (i = 0; !ret && i < len; i++)
+		ret = iReadCAM_CAL(addr + i, buf + i);
+	return ret;
 }
 
-
-static kal_uint8 Read_AWB_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
+/* The AF record is stored with its two bytes swapped */
+static int Read_AF_Otp(kal_uint16 address, unsigned char *iBuffer)
 {
-	u8 readbuff = 0, i;
+	int ret = iReadCAM_CAL(address, iBuffer + 1);
 
-	for (i = 0; i < buffersize; i++) {
-		iReadCAM_CAL((address+i), &readbuff);
-		*(iBuffer+i) = readbuff;
-		CAM_CALDB("read awb data[i] %d=0x%x\n", i , iBuffer[i]);
-	}
-	return KAL_TRUE;
-
+	if (!ret)
+		ret = iReadCAM_CAL(address + 1, iBuffer);
+	return ret;
 }
 
-
-
-static  kal_bool Read_LSC_Otp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
+/*
+ * Called by get_imgsensor_id() once the sensor answers. The HAL's LSC
+ * reads are served from this copy, so it is invalid while it is being
+ * read and valid only when every byte of it was read.
+ */
+void s5k3l8_otp_cache_lsc(kal_uint16 address)
 {
-	u8 readbuff = 0;
-	int i = 0;
-
-	printk("camcal,Read_LSC_Otp EEEE");
-
-	if (otp_flag) {
-
-		for (i = 0; i < buffersize; i++)
-			iBuffer[i] = OTPData[i];
-			CAM_CALDB("read lsc data[%d]=0x%x\n", i, iBuffer[i]);
-	} else {
-		for (i = 0; i < buffersize; i++) {
-			iReadCAM_CAL((address+i), &readbuff);
-			*(iBuffer+i) = readbuff;
-			CAM_CALDB("read lsc data[i] %d=0x%x\n", i, iBuffer[i]);
-		}
-	}
-	otp_flag = 0;
-	return KAL_TRUE;
-
-}
-
-
-static  void ReadOtp(kal_uint16 address, unsigned char *iBuffer, unsigned int buffersize)
-{
-		kal_uint16 i = 0;
-		u8 readbuff = 0;
-		int ret ;
-
-		CAM_CALDB("[CAM_CAL]ENTER address:0x%x buffersize:%d\n ", address, buffersize);
-		if (1) {
-			for (i = 0; i < buffersize; i++) {
-				ret = iReadCAM_CAL(address+i, &readbuff);
-				CAM_CALDB("[CAM_CAL]address+i = 0x%x, readbuff = 0x%x\n", (address+i), readbuff);
-				*(iBuffer+i) = (unsigned char)readbuff;
-			}
-		}
+	otp_lsc_cached = false;
+	otp_lsc_cached = !read_otp(address, OTPData, OTP_DATA_SIZE);
+	if (!otp_lsc_cached)
+		pr_err("s5k3l8otp: LSC table read failed, reading it on each request\n");
 }
 
 /*Burst Write Data*/
@@ -189,21 +155,16 @@ static int iWriteData(unsigned int  ui4_offset, unsigned int  ui4_length, unsign
 }
 
 /*Burst Read Data  iReadData(0x00,932,OTPData);*/
-int s5k3l8_iReadData(kal_uint16 ui4_offset, unsigned int  ui4_length, unsigned char *pinputdata)
+static int s5k3l8_iReadData(kal_uint16 ui4_offset, unsigned int ui4_length, unsigned char *pinputdata)
 {
-/*   int  i4RetValue = 0;*/
-	printk("camcal iReadData, ui4_length is %d!\n", ui4_length);
-	if (ui4_length == 1) { /* layout check */
-		ReadOtp(ui4_offset, pinputdata, ui4_length);
-	} else if (ui4_length == 4) {/* awb  */
-		Read_AWB_Otp(ui4_offset, pinputdata, ui4_length);
-	} else if (ui4_length == 2) {/* af */
-		Read_AF_Otp(ui4_offset, pinputdata, ui4_length);
-	} else {/* lsc */
-		Read_LSC_Otp(ui4_offset, pinputdata, ui4_length);
+	if (ui4_length == 2)	/* AF */
+		return Read_AF_Otp(ui4_offset, pinputdata);
+	if (ui4_length > 4 && otp_lsc_cached) {	/* LSC */
+		memcpy(pinputdata, OTPData, ui4_length);
+		return 0;
 	}
-
-	return 0;
+	/* layout check, AWB, and the LSC table if it is not cached */
+	return read_otp(ui4_offset, pinputdata, ui4_length);
 }
 
 
@@ -390,7 +351,6 @@ static long CAM_CAL_Ioctl(
 		CAM_CALDB("[CAM_CAL] offset %d \n", ptempbuf->u4Offset);
 		CAM_CALDB("[CAM_CAL] length %d \n", ptempbuf->u4Length);
 		 /*CAM_CALDB("[CAM_CAL] Before read Working buffer address 0x%p \n", pu1Params);*/
-		otp_flag = 1;
 		 i4RetValue = s5k3l8_iReadData((u16)ptempbuf->u4Offset, ptempbuf->u4Length, pu1Params);
 		CAM_CALDB("[S24CAM_CAL] After read Working buffer data  0x%x \n", *pu1Params);
 
