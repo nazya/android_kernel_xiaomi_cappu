@@ -263,7 +263,7 @@ unsigned int sensor_event_deregister(unsigned char handle)
 {
 	struct sensor_event_obj *obj = event_obj;
 
-	kfree(obj->client[handle].buffer);
+	vfree(obj->client[handle].buffer);
 	return 0;
 }
 
