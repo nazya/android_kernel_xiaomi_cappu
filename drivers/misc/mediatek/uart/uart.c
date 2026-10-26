@@ -861,10 +861,8 @@ static int  mtk_uart_init_bt_lpm(void)
 			IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
 			"bluetooth host wake", NULL);
 
-	if (ret  < 0) {
+	if (ret  < 0)
 		printk(KERN_ERR "Couldn't acquire BT_HOST_WAKE IRQ");
-		gpio_free(bt_lpm_pdata.bt_host_wake_irq);
-	}
 
 	/* get device wake gpio */
 	bt_lpm_pdata.bt_dev_wake_gpio = of_get_named_gpio(np, "bcm_bt_dev_wake", 0);
