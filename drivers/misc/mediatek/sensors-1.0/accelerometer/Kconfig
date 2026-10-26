@@ -16,17 +16,10 @@ config CUSTOM_KERNEL_ACCELEROMETER
 	  configuration should be configured, and the acceleometer
 	  driver configuration should be configured as well.
 
-source "drivers/misc/mediatek/sensors-1.0/accelerometer/accelhub/Kconfig"
 #source "drivers/misc/mediatek/sensors-1.0/accelerometer/bmi160-spi/Kconfig"
-#source "drivers/misc/mediatek/sensors-1.0/accelerometer/bmi160-i2c/Kconfig"
+source "drivers/misc/mediatek/sensors-1.0/accelerometer/bmi160-i2c/Kconfig"
 #source "drivers/misc/mediatek/sensors-1.0/accelerometer/bma2xx/Kconfig"
 #source "drivers/misc/mediatek/sensors-1.0/accelerometer/mc3433/Kconfig"
 #source "drivers/misc/mediatek/sensors-1.0/accelerometer/lsm6ds3hg/Kconfig"
 #source "drivers/misc/mediatek/sensors-1.0/accelerometer/lis3dh/Kconfig"
 #source "drivers/misc/mediatek/sensors-1.0/accelerometer/mc3410-i2c/Kconfig"
-source "drivers/misc/mediatek/sensors-1.0/accelerometer/bma222e/Kconfig"
-source "drivers/misc/mediatek/sensors-1.0/accelerometer/mpu6050g/Kconfig"
-source "drivers/misc/mediatek/sensors-1.0/accelerometer/mir3da/Kconfig"
-source "drivers/misc/mediatek/sensors-1.0/accelerometer/mc3xxx/Kconfig"
-source "drivers/misc/mediatek/sensors-1.0/accelerometer/mc34xx/Kconfig"
-source "drivers/misc/mediatek/sensors-1.0/accelerometer/bma2x2/Kconfig"
