@@ -322,10 +322,6 @@ int bmi160_acc_exec_command(u8 command)
 	completion_us = bmi160_command_completion_us(command);
 	mutex_lock(&bmi160_command_lock);
 	client = bmi160_acc_i2c_client;
-	if (!client) {
-		err = -ENODEV;
-		goto out;
-	}
 	err = bma_i2c_write_block_raw(client, BMI160_CMD_COMMANDS__REG,
 				      &command, 1);
 	if (!err) {
@@ -334,7 +330,6 @@ int bmi160_acc_exec_command(u8 command)
 		else
 			usleep_range(completion_us, completion_us + 100);
 	}
-out:
 	mutex_unlock(&bmi160_command_lock);
 	return err;
 }
@@ -3476,6 +3471,12 @@ static struct i2c_driver bmi160_acc_i2c_driver = {
 #ifdef CONFIG_OF
 		   .of_match_table = gsensor_of_match,
 #endif
+		   /*
+		    * The gyroscope and step counter drivers send commands and
+		    * SMD requests through this device and its data; they cannot
+		    * follow it being unbound.
+		    */
+		   .suppress_bind_attrs = true,
 		   },
 	.probe = bmi160_acc_i2c_probe,
 	.remove = bmi160_acc_i2c_remove,
