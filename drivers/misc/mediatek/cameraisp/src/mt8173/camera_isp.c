@@ -1176,8 +1176,8 @@ volatile MUINT32 PrvAddr[_ChannelMax] = { 0 };
 static MINT32 mMclk1User;
 static MINT32 mMclk2User;
 static MINT32 mMclk3User;
-/* ISP clock references the sensor driver holds; see ISP_SensorClockGet() */
-static MUINT32 SensorClockRefs;
+/* The sensor driver holds an ISP clock reference; see ISP_SensorClockGet() */
+static bool SensorClockHeld;
 static DEFINE_MUTEX(SensorClockLock);
 /**********************************************
 ************************************************/
@@ -3256,9 +3256,9 @@ int ISP_SensorClockGet(void)
 
 	mutex_lock(&SensorClockLock);
 	/* The HAL opens the ISP before it powers a sensor */
-	if (IspInfo.UserCount || SensorClockRefs) {
+	if (IspInfo.UserCount) {
 		ISP_EnableClock(MTRUE);
-		SensorClockRefs++;
+		SensorClockHeld = true;
 	} else {
 		ret = -ENODEV;
 	}
@@ -3271,13 +3271,11 @@ EXPORT_SYMBOL(ISP_SensorClockGet);
 void ISP_SensorClockPut(void)
 {
 	mutex_lock(&SensorClockLock);
-	if (!WARN_ON(!SensorClockRefs)) {
-		SensorClockRefs--;
-		/* The MCLK reset the last ISP release skipped */
-		if (!SensorClockRefs && !IspInfo.UserCount)
-			ISP_ResetMclk();
-		ISP_EnableClock(MFALSE);
-	}
+	SensorClockHeld = false;
+	/* The MCLK reset the last ISP release skipped */
+	if (!IspInfo.UserCount)
+		ISP_ResetMclk();
+	ISP_EnableClock(MFALSE);
 	mutex_unlock(&SensorClockLock);
 }
 EXPORT_SYMBOL(ISP_SensorClockPut);
@@ -11232,7 +11230,7 @@ static MINT32 ISP_release(struct inode *pInode, struct file *pFile)
 	}
 	/* Reset MCLK, unless a sensor is still powered from it */
 	mutex_lock(&SensorClockLock);
-	if (!SensorClockRefs)
+	if (!SensorClockHeld)
 		ISP_ResetMclk();
 	mutex_unlock(&SensorClockLock);
 	ISP_BufWrite_Free();
