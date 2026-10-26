@@ -326,11 +326,9 @@ static int ddp_get_module_num_l(int *module_list)
 {
 	unsigned int num = 0;
 
-	while (num < DDP_ENING_NUM && module_list[num] != -1)
+	/* Every row keeps a -1 terminator; ddp_set_dst_module() preserves it */
+	while (module_list[num] != -1)
 		num++;
-
-	if (num == DDP_ENING_NUM)
-		DDPERR("module_list_scenario has no terminator\n");
 	return num;
 }
 
@@ -762,7 +760,8 @@ int ddp_set_dst_module(DDP_SCENARIO_ENUM scenario, DISP_MODULE_ENUM dst_module)
 	i = ddp_get_module_num_l(module_list_scenario[scenario]) - 1;
 	ASSERT(i >= 0);
 	if (dst_module == DISP_MODULE_DSIDUAL) {
-		if (i < (DDP_ENING_NUM - 1)) {
+		/* SPLIT1 and DSIDUAL replace the last module; keep the terminator */
+		if (i + 2 < DDP_ENING_NUM) {
 			module_list_scenario[scenario][i++] = DISP_MODULE_SPLIT1;
 		} else {
 			DDPERR("set dst module over up bound\n");
