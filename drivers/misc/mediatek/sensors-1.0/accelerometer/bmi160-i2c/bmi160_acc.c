@@ -2668,7 +2668,7 @@ static ssize_t bmi_register_store(struct device_driver *ddri, const char *buf,
 
 	write_reg_add = (u8) reg_addr;
 	write_data = (u8) data;
-	err += bma_i2c_write_block(client, write_reg_add, &write_data, 1);
+	err = bma_i2c_write_block(client, write_reg_add, &write_data, 1);
 
 	if (!err) {
 		GSE_ERR("write reg 0x%2x, value= 0x%2x\n", reg_addr, data);
