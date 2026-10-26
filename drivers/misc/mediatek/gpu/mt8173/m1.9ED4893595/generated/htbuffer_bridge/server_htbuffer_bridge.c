@@ -86,23 +86,14 @@ PVRSRVBridgeHTBConfigure(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT64 ui64BufferSize = 
-			((IMG_UINT64) psHTBConfigureIN->ui32NameSize * sizeof(IMG_CHAR)) +
+	IMG_UINT32 ui32BufferSize = 
+			(psHTBConfigureIN->ui32NameSize * sizeof(IMG_CHAR)) +
 			0;
-	IMG_UINT32 ui32BufferSize = 0;
 
 
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 
 
-
-	if (ui64BufferSize > IMG_UINT32_MAX)
-	{
-		psHTBConfigureOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
-		goto HTBConfigure_exit;
-	}
-
-	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{

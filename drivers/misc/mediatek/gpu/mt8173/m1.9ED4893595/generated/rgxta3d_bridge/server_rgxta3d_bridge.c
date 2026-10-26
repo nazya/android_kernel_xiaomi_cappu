@@ -88,24 +88,15 @@ PVRSRVBridgeRGXCreateHWRTData(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT64 ui64BufferSize = 
-			((IMG_UINT64) RGXFW_MAX_FREELISTS * sizeof(RGX_FREELIST *)) +
-			((IMG_UINT64) RGXFW_MAX_FREELISTS * sizeof(IMG_HANDLE)) +
+	IMG_UINT32 ui32BufferSize = 
+			(RGXFW_MAX_FREELISTS * sizeof(RGX_FREELIST *)) +
+			(RGXFW_MAX_FREELISTS * sizeof(IMG_HANDLE)) +
 			0;
-	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
 	psRGXCreateHWRTDataOUT->hCleanupCookie = NULL;
-
-	if (ui64BufferSize > IMG_UINT32_MAX)
-	{
-		psRGXCreateHWRTDataOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
-		goto RGXCreateHWRTData_exit;
-	}
-
-	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
@@ -1254,22 +1245,13 @@ PVRSRVBridgeRGXCreateRenderContext(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT64 ui64BufferSize = 
-			((IMG_UINT64) psRGXCreateRenderContextIN->ui32FrameworkCmdize * sizeof(IMG_BYTE)) +
+	IMG_UINT32 ui32BufferSize = 
+			(psRGXCreateRenderContextIN->ui32FrameworkCmdize * sizeof(IMG_BYTE)) +
 			0;
-	IMG_UINT32 ui32BufferSize = 0;
 
 
 
 
-
-	if (ui64BufferSize > IMG_UINT32_MAX)
-	{
-		psRGXCreateRenderContextOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
-		goto RGXCreateRenderContext_exit;
-	}
-
-	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{

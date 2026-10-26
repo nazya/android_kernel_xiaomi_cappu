@@ -1572,10 +1572,9 @@ PVRSRVBridgeRGXCreateRayContext(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_BOOL bHaveEnoughSpace = IMG_FALSE;
 #endif
 
-	IMG_UINT64 ui64BufferSize = 
-			((IMG_UINT64) psRGXCreateRayContextIN->ui32FrameworkCmdSize * sizeof(IMG_BYTE)) +
+	IMG_UINT32 ui32BufferSize = 
+			(psRGXCreateRayContextIN->ui32FrameworkCmdSize * sizeof(IMG_BYTE)) +
 			0;
-	IMG_UINT32 ui32BufferSize = 0;
 
 	{
 		PVRSRV_DEVICE_NODE *psDeviceNode = OSGetDevData(psConnection);
@@ -1592,14 +1591,6 @@ PVRSRVBridgeRGXCreateRayContext(IMG_UINT32 ui32DispatchTableEntry,
 
 
 
-
-	if (ui64BufferSize > IMG_UINT32_MAX)
-	{
-		psRGXCreateRayContextOUT->eError = PVRSRV_ERROR_BRIDGE_BUFFER_TOO_SMALL;
-		goto RGXCreateRayContext_exit;
-	}
-
-	ui32BufferSize = (IMG_UINT32) ui64BufferSize;
 
 	if (ui32BufferSize != 0)
 	{
