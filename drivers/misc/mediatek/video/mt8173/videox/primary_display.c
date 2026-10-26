@@ -5519,35 +5519,15 @@ LCM_DRIVER *DISP_GetLcmDrv(void)
 }
 
 
-static int primary_display_capture_layout(unsigned int width, unsigned int height,
-					  unsigned int format, unsigned int *pitch,
-					  unsigned int *buffer_size)
+/* The format is one of those mtkfb_capture_format() returns, or eBGRA8888 */
+static unsigned int primary_display_capture_pitch(unsigned int format)
 {
-	switch (format) {
-	case eRGB565:
-	case eYUV_420_2P_UYVY:
-	case eRGB888:
-	case eBGR888:
-	case eARGB8888:
-	case eABGR8888:
-	case eBGRA8888:
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	*pitch = width * (DP_COLOR_BITS_PER_PIXEL(format) / 8);
-	*buffer_size = *pitch * height;
-	return 0;
+	return primary_display_get_width() * (DP_COLOR_BITS_PER_PIXEL(format) / 8);
 }
 
-int primary_display_get_capture_size(unsigned int format, unsigned int *buffer_size)
+unsigned int primary_display_get_capture_size(unsigned int format)
 {
-	unsigned int pitch;
-
-	return primary_display_capture_layout(primary_display_get_width(),
-					      primary_display_get_height(), format,
-					      &pitch, buffer_size);
+	return primary_display_capture_pitch(format) * primary_display_get_height();
 }
 
 struct primary_display_capture_quarantine {
@@ -5559,8 +5539,7 @@ struct primary_display_capture_quarantine {
 
 static struct primary_display_capture_quarantine capture_quarantine;
 
-int primary_display_capture_framebuffer_ovl(void *buffer, unsigned int buffer_capacity,
-					    unsigned int format,
+int primary_display_capture_framebuffer_ovl(void *buffer, unsigned int format,
 					    bool *buffer_releasable)
 {
 	cmdqRecHandle config_handle = NULL;
@@ -5569,18 +5548,12 @@ int primary_display_capture_framebuffer_ovl(void *buffer, unsigned int buffer_ca
 	m4u_client_t *m4u_client = NULL;
 	unsigned int width = primary_display_get_width();
 	unsigned int height = primary_display_get_height();
-	unsigned int pitch;
-	unsigned int frame_size;
+	unsigned int pitch = primary_display_capture_pitch(format);
+	unsigned int frame_size = pitch * height;
 	unsigned int mva = 0;
 	int ret;
 
 	*buffer_releasable = true;
-
-	ret = primary_display_capture_layout(width, height, format, &pitch, &frame_size);
-	if (ret)
-		return ret;
-	if (buffer_capacity < frame_size)
-		return -ENOSPC;
 
 	disp_sw_mutex_lock(&(pgc->capture_lock));
 
@@ -5606,11 +5579,8 @@ int primary_display_capture_framebuffer_ovl(void *buffer, unsigned int buffer_ca
 	 * vzalloc() returns virtually contiguous pages.  M4U maps those pages into
 	 * one device-visible MVA; cleaning here hands ownership to WDMA.
 	 */
-	ret = m4u_cache_sync(m4u_client, M4U_PORT_DISP_WDMA0,
-			     (unsigned long)buffer, frame_size, mva,
-			     M4U_CACHE_FLUSH_BY_RANGE);
-	if (ret)
-		goto out;
+	m4u_cache_sync(m4u_client, M4U_PORT_DISP_WDMA0, (unsigned long)buffer,
+		       frame_size, mva, M4U_CACHE_FLUSH_BY_RANGE);
 
 	ret = cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &config_handle);
 	if (ret)
@@ -5693,9 +5663,9 @@ remove_memout:
 	 * after EOF so copy_to_user() cannot observe a stale speculative fill.
 	 */
 	if (!ret)
-		ret = m4u_cache_sync(m4u_client, M4U_PORT_DISP_WDMA0,
-				     (unsigned long)buffer, frame_size, mva,
-				     M4U_CACHE_INVALID_BY_RANGE);
+		m4u_cache_sync(m4u_client, M4U_PORT_DISP_WDMA0,
+			       (unsigned long)buffer, frame_size, mva,
+			       M4U_CACHE_INVALID_BY_RANGE);
 	goto out;
 
 unlock_display:
@@ -5706,8 +5676,7 @@ out:
 		m4u_dealloc_mva(m4u_client, M4U_PORT_DISP_WDMA0, mva);
 	if (m4u_client)
 		m4u_destroy_client(m4u_client);
-	if (config_handle)
-		cmdqRecDestroy(config_handle);
+	cmdqRecDestroy(config_handle);
 
 	disp_sw_mutex_unlock(&(pgc->capture_lock));
 	return ret;

@@ -217,9 +217,8 @@ int primary_display_diagnose(void);
 
 int primary_display_get_info(void *info);
 int primary_display_capture_framebuffer(unsigned int pbuf);
-int primary_display_get_capture_size(unsigned int format, unsigned int *buffer_size);
-int primary_display_capture_framebuffer_ovl(void *buffer, unsigned int buffer_capacity,
-					    unsigned int format,
+unsigned int primary_display_get_capture_size(unsigned int format);
+int primary_display_capture_framebuffer_ovl(void *buffer, unsigned int format,
 					    bool *buffer_releasable);
 uint32_t DISP_GetVRamSizeBoot(char *cmdline);
 uint32_t DISP_GetVRamSize(void);

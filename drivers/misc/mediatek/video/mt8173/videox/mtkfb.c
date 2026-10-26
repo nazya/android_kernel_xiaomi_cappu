@@ -1236,33 +1236,22 @@ static unsigned int mtkfb_capture_format(MTK_FB_FORMAT format)
  */
 static int mtkfb_capture_to_user(void __user *destination, unsigned int format)
 {
-	unsigned int allocation_size;
+	unsigned int allocation_size = primary_display_get_capture_size(format);
 	bool buffer_releasable;
 	void *buffer;
 	int ret;
-
-	if (!destination)
-		return -EFAULT;
-
-	ret = primary_display_get_capture_size(format, &allocation_size);
-	if (ret)
-		return ret;
 
 	buffer = vzalloc(allocation_size);
 	if (!buffer)
 		return -ENOMEM;
 
 	dprec_logger_start(DPREC_LOGGER_WDMA_DUMP, 0, 0);
-	ret = primary_display_capture_framebuffer_ovl(buffer, allocation_size,
-							format, &buffer_releasable);
+	ret = primary_display_capture_framebuffer_ovl(buffer, format,
+							&buffer_releasable);
 	dprec_logger_done(DPREC_LOGGER_WDMA_DUMP, 0, 0);
-	if (ret)
-		goto out;
-
-	if (copy_to_user(destination, buffer, allocation_size))
+	if (!ret && copy_to_user(destination, buffer, allocation_size))
 		ret = -EFAULT;
 
-out:
 	if (buffer_releasable)
 		vfree(buffer);
 	else
