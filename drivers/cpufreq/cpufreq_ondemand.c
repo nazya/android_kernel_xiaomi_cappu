@@ -524,6 +524,7 @@ static int od_init(struct dbs_data *dbs_data, struct cpufreq_policy *policy)
 		tuners->ignore_nice_load = 0;
 		tuners->powersave_bias = default_powersave_bias;
 		tuners->io_is_busy = should_io_be_busy();
+		tuners->sampling_rate = dbs_default_sampling_rate(policy);
 		*cached_tuners = tuners;
 	}
 

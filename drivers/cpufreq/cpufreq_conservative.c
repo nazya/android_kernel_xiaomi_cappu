@@ -332,6 +332,7 @@ static int cs_init(struct dbs_data *dbs_data, struct cpufreq_policy *policy)
 	tuners->sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR;
 	tuners->ignore_nice_load = 0;
 	tuners->freq_step = DEF_FREQUENCY_STEP;
+	tuners->sampling_rate = dbs_default_sampling_rate(policy);
 
 	dbs_data->tuners = tuners;
 	dbs_data->min_sampling_rate = MIN_SAMPLING_RATE_RATIO *

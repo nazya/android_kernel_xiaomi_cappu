@@ -249,6 +249,15 @@ static inline int delay_for_sampling_rate(unsigned int sampling_rate)
 	return delay;
 }
 
+/* The sampling rate of new tunables: a multiple of the transition latency */
+static inline unsigned int
+dbs_default_sampling_rate(struct cpufreq_policy *policy)
+{
+	/* policy latency is in ns. Convert it to us first */
+	return max(policy->cpuinfo.transition_latency / 1000, 1U) *
+		LATENCY_MULTIPLIER;
+}
+
 #define declare_show_sampling_rate_min(_gov)				\
 static ssize_t show_sampling_rate_min_gov_sys				\
 (struct kobject *kobj, struct attribute *attr, char *buf)		\
