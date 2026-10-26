@@ -31,80 +31,21 @@ static void step_c_init_event(struct sensor_event *event, int handle,
 
 static void step_c_work_func(struct work_struct *work)
 {
-
-	struct step_c_context *cxt = NULL;
+	struct step_c_context *cxt = step_c_context_obj;
 	uint32_t counter;
-	uint32_t counter_floor_c;
-	/* hwm_sensor_data sensor_data; */
 	int status;
-	int64_t nt;
-	struct timespec time;
-	int err = 0;
+	int err;
 
-	cxt = step_c_context_obj;
+	/* The poll can still run once after the last data client left */
+	if (!cxt->is_active_data)
+		goto step_c_loop;
 
-	if (NULL == cxt->step_c_data.get_data)
-		STEP_C_LOG("step_c driver not register data path\n");
-	if (cxt->step_c_data.get_data_floor_c == NULL)
-		STEP_C_LOG("floor_c driver not register data path\n");
-
-
-	time.tv_sec = time.tv_nsec = 0;
-	time = get_monotonic_coarse();
-	nt = time.tv_sec * 1000000000LL + time.tv_nsec;
-
-	/* add wake lock to make sure data can be read before system suspend */
-	if (cxt->is_active_data == true)
-		err = cxt->step_c_data.get_data(&counter, &status);
-
+	err = cxt->step_c_data.get_data(&counter, &status);
 	if (err) {
 		STEP_C_PR_ERR("get step_c data fails!!\n");
 		goto step_c_loop;
-	} else {
-		{
-			cxt->drv_data.counter = counter;
-			cxt->drv_data.status = status;
-		}
 	}
-
-	if (cxt->is_floor_c_active_data == true)
-		err = cxt->step_c_data.get_data_floor_c(&counter_floor_c, &status);
-
-	if (err) {
-		STEP_C_PR_ERR("get floor_c data fails!!\n");
-		goto step_c_loop;
-	} else {
-		{
-			cxt->drv_data.floor_counter = counter_floor_c;
-			cxt->drv_data.floor_c_status = status;
-		}
-	}
-
-	if (true == cxt->is_first_data_after_enable) {
-		cxt->is_first_data_after_enable = false;
-		/* filter -1 value */
-		if (STEP_C_INVALID_VALUE == cxt->drv_data.counter) {
-			STEP_C_LOG(" read invalid data\n");
-			goto step_c_loop;
-
-		}
-	}
-
-	if (true == cxt->is_first_floor_c_data_after_enable) {
-		cxt->is_first_floor_c_data_after_enable = false;
-		/* filter -1 value */
-		if (cxt->drv_data.floor_counter == STEP_C_INVALID_VALUE) {
-			STEP_C_LOG(" read invalid data\n");
-			goto step_c_loop;
-
-		}
-	}
-
-	/* report data to input device */
-	/*STEP_C_LOG("step_c data[%d]\n", cxt->drv_data.counter);*/
-
-	step_c_data_report(cxt->drv_data.counter, cxt->drv_data.status);
-	floor_c_data_report(cxt->drv_data.floor_counter, cxt->drv_data.floor_c_status);
+	step_c_data_report(counter, status);
 
 step_c_loop:
 	if (true == cxt->is_polling_run) {
@@ -138,7 +79,6 @@ static struct step_c_context *step_c_context_alloc_object(void)
 	obj->timer.expires = jiffies + atomic_read(&obj->delay) / (1000 / HZ);
 	obj->timer.function = step_c_poll;
 	obj->timer.data = (unsigned long)obj;
-	obj->is_first_data_after_enable = false;
 	obj->is_polling_run = false;
 	mutex_init(&obj->step_c_op_mutex);
 	obj->is_step_c_batch_enable = false;	/* for batch mode init */
@@ -379,7 +319,6 @@ static int step_c_enable_data(int enable)
 	if (1 == enable) {
 		STEP_C_LOG("STEP_C enable data\n");
 		cxt->is_active_data = true;
-		cxt->is_first_data_after_enable = true;
 		cxt->step_c_ctl.open_report_data(1);
 		if (false == cxt->is_polling_run && cxt->is_step_c_batch_enable == false) {
 			if (false == cxt->step_c_ctl.is_report_input_direct) {
@@ -398,7 +337,6 @@ static int step_c_enable_data(int enable)
 				cxt->is_polling_run = false;
 				del_timer_sync(&cxt->timer);
 				cancel_work_sync(&cxt->report);
-				cxt->drv_data.counter = STEP_C_INVALID_VALUE;
 			}
 		}
 
@@ -625,17 +563,6 @@ static ssize_t step_c_store_batch(struct device *dev, struct device_attribute *a
 		}
 		if (res < 0)
 			STEP_C_PR_ERR("step smd enable batch err %d\n", res);
-	} else if (handle == ID_FLOOR_COUNTER) {
-		if (cxt->step_c_ctl.is_floor_c_support_batch == true)
-			maxBatchReportLatencyNs = 0;
-		else
-			maxBatchReportLatencyNs = 0;
-		if (cxt->step_c_ctl.floor_c_batch != NULL)
-			res = cxt->step_c_ctl.floor_c_batch(flag, samplingPeriodNs, maxBatchReportLatencyNs);
-		else
-			STEP_C_PR_ERR("DON'T SUPPORT FLOOR COUNT COMMON VERSION BATCH\n");
-		if (res < 0)
-			STEP_C_PR_ERR("floor count enable batch err %d\n", res);
 	} else {
 		res = -EINVAL;
 	}
@@ -684,14 +611,8 @@ static ssize_t step_c_store_flush(struct device *dev, struct device_attribute *a
 			STEP_C_PR_ERR("DON'T SUPPORT SMD COMMON VERSION FLUSH\n");
 		if (err < 0)
 			STEP_C_PR_ERR("smd enable flush err %d\n", err);
-	} else if (handle == ID_FLOOR_COUNTER) {
-		if (cxt->step_c_ctl.floor_c_flush != NULL)
-			err = cxt->step_c_ctl.floor_c_flush();
-		else
-			STEP_C_PR_ERR("DON'T SUPPORT FLOOR COUNTER COMMON VERSION FLUSH\n");
-		if (err < 0)
-			STEP_C_PR_ERR("floor counter enable flush err %d\n", err);
-
+	} else {
+		err = -EINVAL;
 	}
 	mutex_unlock(&step_c_context_obj->step_c_op_mutex);
 	return err;
@@ -866,7 +787,6 @@ int step_c_register_data_path(struct step_c_data_path *data)
 	cxt->step_c_data.vender_div = data->vender_div;
 	cxt->step_c_data.get_data_significant = data->get_data_significant;
 	cxt->step_c_data.get_data_step_d = data->get_data_step_d;
-	cxt->step_c_data.get_data_floor_c = data->get_data_floor_c;
 	STEP_C_LOG("step_c register data path vender_div: %d\n", cxt->step_c_data.vender_div);
 	if (NULL == cxt->step_c_data.get_data
 	    || NULL == cxt->step_c_data.get_data_significant
@@ -885,7 +805,6 @@ int step_c_register_control_path(struct step_c_control_path *ctl)
 	cxt = step_c_context_obj;
 	cxt->step_c_ctl.step_c_set_delay = ctl->step_c_set_delay;
 	cxt->step_c_ctl.step_d_set_delay = ctl->step_d_set_delay;
-	cxt->step_c_ctl.floor_c_set_delay = ctl->floor_c_set_delay;
 	cxt->step_c_ctl.open_report_data = ctl->open_report_data;
 	cxt->step_c_ctl.enable_nodata = ctl->enable_nodata;
 	cxt->step_c_ctl.step_c_batch = ctl->step_c_batch;
@@ -894,16 +813,12 @@ int step_c_register_control_path(struct step_c_control_path *ctl)
 	cxt->step_c_ctl.step_d_flush = ctl->step_d_flush;
 	cxt->step_c_ctl.smd_batch = ctl->smd_batch;
 	cxt->step_c_ctl.smd_flush = ctl->smd_flush;
-	cxt->step_c_ctl.floor_c_batch = ctl->floor_c_batch;
-	cxt->step_c_ctl.floor_c_flush = ctl->floor_c_flush;
 	cxt->step_c_ctl.is_counter_support_batch = ctl->is_counter_support_batch;
 	cxt->step_c_ctl.is_detector_support_batch = ctl->is_detector_support_batch;
 	cxt->step_c_ctl.is_smd_support_batch = ctl->is_smd_support_batch;
-	cxt->step_c_ctl.is_floor_c_support_batch = ctl->is_floor_c_support_batch;
 	cxt->step_c_ctl.is_report_input_direct = ctl->is_report_input_direct;
 	cxt->step_c_ctl.enable_significant = ctl->enable_significant;
 	cxt->step_c_ctl.enable_step_detect = ctl->enable_step_detect;
-	cxt->step_c_ctl.enable_floor_c = ctl->enable_floor_c;
 
 	if (NULL == cxt->step_c_ctl.step_c_set_delay || NULL == cxt->step_c_ctl.open_report_data
 	    || NULL == cxt->step_c_ctl.enable_nodata || NULL == cxt->step_c_ctl.step_d_set_delay
@@ -949,24 +864,6 @@ int step_c_data_report(uint32_t new_counter, int status)
 	return 0;
 }
 
-int floor_c_data_report(uint32_t new_counter, int status)
-{
-	int err = 0;
-	struct sensor_event event;
-	static uint32_t last_floor_counter;
-
-	if (last_floor_counter != new_counter) {
-		event.flush_action = DATA_ACTION;
-		event.handle = ID_FLOOR_COUNTER;
-		event.word[0] = new_counter;
-		last_floor_counter = new_counter;
-		err = sensor_input_event(step_c_context_obj->mdev.minor, &event);
-		if (err < 0)
-			pr_err_ratelimited("event buffer full, so drop this data\n");
-	}
-	return 0;
-}
-
 int step_c_flush_report(void)
 {
 	struct sensor_event event;
@@ -1000,21 +897,6 @@ int step_d_flush_report(void)
 int smd_flush_report(void)
 {
 	return 0;
-}
-
-int floor_c_flush_report(void)
-{
-	struct sensor_event event;
-	int err = 0;
-
-	event.handle = ID_FLOOR_COUNTER;
-	event.flush_action = FLUSH_ACTION;
-	err = sensor_input_event(step_c_context_obj->mdev.minor, &event);
-	if (err < 0)
-		pr_err_ratelimited("event buffer full, so drop this data\n");
-	else
-		STEP_C_LOG("flush\n");
-	return err;
 }
 
 static int step_c_probe(void)
