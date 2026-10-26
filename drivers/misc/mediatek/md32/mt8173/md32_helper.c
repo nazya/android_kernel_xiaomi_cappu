@@ -69,9 +69,6 @@ unsigned long md32_log_lock_addr;
 unsigned long md32_log_buf_len_addr;
 unsigned long enable_md32_mobile_log_addr;
 
-unsigned char *md32_data_image;
-unsigned char *md32_program_image;
-
 static wait_queue_head_t logwait;
 
 static void memcpy_md32(void __iomem *trg, const void *src, int size)
@@ -307,63 +304,43 @@ void buf_full_ipi_handler(int id, void *data, unsigned int len)
 	wake_up(&logwait);
 }
 
-int get_md32_img_sz(const char *IMAGE_PATH)
+/* Copy an MD32 image into TCM; the part beyond tcm_size is dropped. */
+static int md32_load_image(const char *path, void __iomem *tcm,
+			   size_t tcm_size)
 {
-	struct file *filp = NULL;
-	struct inode *inode;
-	off_t fsize = 0;
+	struct file *filp;
+	void *buf;
+	size_t size;
+	int ret;
 
-	filp = filp_open(IMAGE_PATH, O_RDONLY, 0644);
-
+	filp = filp_open(path, O_RDONLY, 0);
 	if (IS_ERR(filp)) {
-		pr_err("[MD32] Open MD32 image %s FAIL! (%ld)\n", IMAGE_PATH, PTR_ERR(filp));
-		return -1;
+		pr_err("[MD32] Open MD32 image %s FAIL (%ld)!\n", path,
+		       PTR_ERR(filp));
+		return PTR_ERR(filp);
 	}
 
-	inode = filp->f_dentry->d_inode;
-	fsize = inode->i_size;
-
-	filp_close(filp, NULL);
-	return fsize;
-}
-
-int load_md32(const char *IMAGE_PATH, unsigned long dst)
-{
-	struct file *filp = NULL;
-	unsigned char *buf = NULL;
-	struct inode *inode;
-	off_t fsize;
-	mm_segment_t fs;
-
-	filp = filp_open(IMAGE_PATH, O_RDONLY, 0644);
-
-	if (IS_ERR(filp)) {
-		pr_err("[MD32] Open MD32 image %s FAIL (%ld)!\n", IMAGE_PATH, PTR_ERR(filp));
-		goto error;
-	} else {
-		inode = filp->f_dentry->d_inode;
-		fsize = inode->i_size;
-		pr_debug("[MD32] file %s size: %i\n", IMAGE_PATH, (int)fsize);
-		buf = kmalloc((size_t)fsize + 1, GFP_KERNEL);
-		fs = get_fs();
-		set_fs(KERNEL_DS);
-		filp->f_op->read(filp, buf, fsize, &filp->f_pos);
-		set_fs(fs);
-		buf[fsize] = '\0';
-		memcpy((void *)dst, (const void *)buf, fsize);
+	size = min_t(loff_t, i_size_read(file_inode(filp)), tcm_size);
+	buf = kmalloc(size, GFP_KERNEL);
+	if (!buf) {
+		ret = -ENOMEM;
+		goto out_close;
 	}
 
+	ret = kernel_read(filp, 0, buf, size);
+	if (ret != size) {
+		pr_err("[MD32] Read MD32 image %s FAIL (%d)!\n", path, ret);
+		ret = ret < 0 ? ret : -EIO;
+		goto out_free;
+	}
+
+	memcpy_md32(tcm, buf, size);
+	ret = 0;
+out_free:
+	kfree(buf);
+out_close:
 	filp_close(filp, NULL);
-	kfree(buf);
-	return fsize;
-
-error:
-	if (filp != NULL)
-		filp_close(filp, NULL);
-
-	kfree(buf);
-
-	return -1;
+	return ret;
 }
 
 void boot_up_md32(void)
@@ -412,9 +389,7 @@ static inline ssize_t md32_boot_show(struct device *kobj,
 int reboot_load_md32(void)
 {
 	unsigned int sw_rstn;
-	int ret = 0;
-	int d_sz;
-	int p_sz;
+	int ret;
 
 	sw_rstn = readl((void __iomem *)MD32_BASE);
 
@@ -424,66 +399,21 @@ int reboot_load_md32(void)
 	/* reset MD32 */
 	mt_reg_sync_writel(0x0, MD32_BASE);
 
-	d_sz = get_md32_img_sz(MD32_DATA_IMAGE_PATH);
-	if (d_sz <= 0) {
-		pr_err("MD32 boot up failed --> can not get data image size\n");
-		ret = -1;
-		goto error;
-	}
-
-	md32_data_image = kmalloc((size_t)d_sz + 1, GFP_KERNEL);
-	if (!md32_data_image) {
-		ret = -1;
-		goto error;
-	}
-
-	ret = load_md32((const char *)MD32_DATA_IMAGE_PATH,
-			(unsigned long)md32_data_image);
-	if (ret < 0) {
+	ret = md32_load_image(MD32_DATA_IMAGE_PATH, MD32_DTCM, MD32_DTCM_SIZE);
+	if (ret) {
 		pr_err("MD32 boot up failed --> load data image failed!\n");
-		ret = -1;
-		goto error;
+		return ret;
 	}
 
-	if (d_sz > MD32_DTCM_SIZE)
-		d_sz = MD32_DTCM_SIZE;
-
-	memcpy_md32((void *)MD32_DTCM, (const void *)md32_data_image, d_sz);
-
-	p_sz = get_md32_img_sz(MD32_PROGRAM_IMAGE_PATH);
-	if (p_sz <= 0) {
-		pr_err("MD32 boot up failed --> can not get program image size\n");
-		ret = -1;
-		goto error;
-	}
-
-	md32_program_image = kmalloc((size_t)p_sz + 1, GFP_KERNEL);
-	if (!md32_program_image) {
-		ret = -1;
-		goto error;
-	}
-
-	ret = load_md32((const char *)MD32_PROGRAM_IMAGE_PATH,
-			(unsigned long)md32_program_image);
-	if (ret < 0) {
+	ret = md32_load_image(MD32_PROGRAM_IMAGE_PATH, MD32_PTCM,
+			      MD32_PTCM_SIZE);
+	if (ret) {
 		pr_err("MD32 boot up failed --> load program image failed!\n");
-		ret = -1;
-		goto error;
+		return ret;
 	}
-	if (p_sz > MD32_PTCM_SIZE)
-		p_sz = MD32_PTCM_SIZE;
-
-	memcpy_md32((void *)MD32_PTCM, (const void *)md32_program_image, p_sz);
 
 	boot_up_md32();
-	return ret;
-
-error:
-	pr_err("[MD32] boot up failed!!! free images\n");
-	kfree(md32_data_image);
-	kfree(md32_program_image);
-
-	return ret;
+	return 0;
 }
 
 static ssize_t md32_boot_store(struct device *kobj,
