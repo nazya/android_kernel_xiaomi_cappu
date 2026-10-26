@@ -576,14 +576,14 @@ static IMG_UINT32 MTKCalPowerIndex(void)
 #endif
 
 #ifdef ENABLE_COMMON_DVFS
-static void MTKCalGpuLoading(unsigned int *pui32Loading, unsigned int *pui32Block, unsigned int *pui32Idle)
+static bool MTKCalGpuLoading(unsigned int *pui32Loading, unsigned int *pui32Block, unsigned int *pui32Idle)
 {
 	PVRSRV_DEVICE_NODE *psDevNode;
 	PVRSRV_RGXDEV_INFO *psDevInfo;
 
 	psDevNode = MTKGetRGXDevNode();
 	if (!psDevNode)
-		return;
+		return false;
 
 	psDevInfo = (PVRSRV_RGXDEV_INFO *)(psDevNode->pvDevice);
 	if (psDevInfo && psDevInfo->pfnGetGpuUtilStats) {
@@ -596,7 +596,7 @@ static void MTKCalGpuLoading(unsigned int *pui32Loading, unsigned int *pui32Bloc
 		}
 
 		if (g_RGXutilUser == NULL)
-			return;
+			return false;
 
 		psDevInfo->pfnGetGpuUtilStats(psDevInfo->psDeviceNode, g_RGXutilUser, &sGpuUtilStats);
 		if (sGpuUtilStats.bValid) {
@@ -617,8 +617,10 @@ static void MTKCalGpuLoading(unsigned int *pui32Loading, unsigned int *pui32Bloc
 			*pui32Idle = (unsigned long)(100*(sGpuUtilStats.ui64GpuStatIdle)) /
 				(unsigned long)sGpuUtilStats.ui64GpuStatCumulative;
 #endif
+			return true;
 		}
 	}
+	return false;
 }
 
 /* For ged_dvfs idx commit */

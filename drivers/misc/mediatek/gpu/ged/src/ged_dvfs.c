@@ -239,16 +239,16 @@ unsigned long ged_query_info(GED_INFO eType)
 EXPORT_SYMBOL(ged_query_info);
 
 /* ----------------------------------------------------------------------------- */
-void (*ged_dvfs_cal_gpu_utilization_fp)(unsigned int *pui32Loading , unsigned int *pui32Block, unsigned int *pui32Idle) = NULL;
+bool (*ged_dvfs_cal_gpu_utilization_fp)(unsigned int *pui32Loading , unsigned int *pui32Block, unsigned int *pui32Idle) = NULL;
 EXPORT_SYMBOL(ged_dvfs_cal_gpu_utilization_fp);
 /* ----------------------------------------------------------------------------- */
 
 bool ged_dvfs_cal_gpu_utilization(unsigned int *pui32Loading , unsigned int *pui32Block, unsigned int *pui32Idle)
 {
 
-	if (NULL != ged_dvfs_cal_gpu_utilization_fp)
+	if (NULL != ged_dvfs_cal_gpu_utilization_fp &&
+	    ged_dvfs_cal_gpu_utilization_fp(pui32Loading, pui32Block, pui32Idle))
 	{
-		ged_dvfs_cal_gpu_utilization_fp(pui32Loading, pui32Block, pui32Idle);
 		gpu_sub_loading = *pui32Loading;
 		return true;
 	}
@@ -914,9 +914,9 @@ void ged_dvfs_save_loading_page(void) /* Need spinlocked */
 void ged_dvfs_cal_gpu_utilization_force(void)
 {
 	unsigned long ui32IRQFlags;
-	unsigned int loading = 0;
-	unsigned int block = 0;
-	unsigned int idle = 0;
+	unsigned int loading;
+	unsigned int block;
+	unsigned int idle;
 	unsigned long long t;
 	unsigned long ulwork;
 

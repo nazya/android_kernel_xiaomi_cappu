@@ -88,7 +88,7 @@ int MTKRGXDeviceInit(PVRSRV_DEVICE_CONFIG *psDevConfig);
 int MTKRGXDeviceDeInit(PVRSRV_DEVICE_CONFIG *psDevConfig);
 
 /* from gpu/ged/src/ged_dvfs.c */
-extern void (*ged_dvfs_cal_gpu_utilization_fp)(unsigned int *pui32Loading,
+extern bool (*ged_dvfs_cal_gpu_utilization_fp)(unsigned int *pui32Loading,
 											   unsigned int *pui32Block,
 											   unsigned int *pui32Idle);
 extern void (*ged_dvfs_gpu_freq_commit_fp)(unsigned long ui32NewFreqID,

@@ -841,7 +841,7 @@ static void* ged_dvfs_integration_report_seq_next(struct seq_file *psSeqFile, vo
 }
 //-----------------------------------------------------------------------------
 
-extern void (*ged_dvfs_cal_gpu_utilization_fp)(unsigned int* pui32Loading , unsigned int* pui32Block,unsigned int* pui32Idle) ;
+extern bool (*ged_dvfs_cal_gpu_utilization_fp)(unsigned int* pui32Loading , unsigned int* pui32Block,unsigned int* pui32Idle) ;
 extern void (*ged_dvfs_gpu_freq_commit_fp)(unsigned long ui32NewFreqID, GED_DVFS_COMMIT_TYPE eCommitType, int* pbCommited) ;
 extern bool ged_gpu_power_on_notified;
 extern bool ged_gpu_power_off_notified;
