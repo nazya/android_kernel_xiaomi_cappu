@@ -155,7 +155,7 @@ typedef struct ion_mm_config_buffer_param {
 		ion_user_handle_t handle;
 		struct ion_handle *kernel_handle;
 	};
-	int eModuleID;
+	unsigned int eModuleID;	/* M4U_PORT_ID */
 	unsigned int security;
 	unsigned int coherent;
 } ion_mm_config_buffer_param_t;

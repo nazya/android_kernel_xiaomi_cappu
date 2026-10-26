@@ -74,7 +74,7 @@ static int ion_fb_heap_phys(struct ion_heap *heap, struct ion_buffer *buffer,
 		IONMSG("[ion_fb_heap_phys]: Error. Invalid buffer.\n");
 		return -EFAULT; /* Invalid buffer */
 	}
-	if (pBufferInfo->eModuleID == -1) {
+	if (!pBufferInfo->configured) {
 		IONMSG("[ion_fb_heap_phys]: Error. Buffer not configured.\n");
 		return -EFAULT; /* Buffer not configured. */
 	}
@@ -125,7 +125,6 @@ static int ion_fb_heap_allocate(struct ion_heap *heap,
 	pBufferInfo->priv_phys = paddr;
 	pBufferInfo->pVA = 0;
 	pBufferInfo->MVA = 0;
-	pBufferInfo->eModuleID = -1;
 	pBufferInfo->dbg_info.value1 = 0;
 	pBufferInfo->dbg_info.value2 = 0;
 	pBufferInfo->dbg_info.value3 = 0;

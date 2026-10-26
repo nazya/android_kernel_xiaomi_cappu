@@ -14,9 +14,12 @@
 #ifndef __ION_FB_HEAP_H__
 #define __ION_FB_HEAP_H__
 
+#include <m4u.h>
+
 typedef struct {
 	struct mutex lock;
-	int eModuleID;
+	M4U_PORT_ID eModuleID;
+	bool configured;	/* by ION_MM_CONFIG_BUFFER */
 	unsigned int security;
 	unsigned int coherent;
 	void *pVA;

@@ -35,7 +35,8 @@
 #include "ion_sec_heap.h"
 
 typedef struct {
-	int eModuleID;
+	M4U_PORT_ID eModuleID;
+	bool configured;	/* by ION_MM_CONFIG_BUFFER */
 	unsigned int security;
 	unsigned int coherent;
 	void *pVA;
@@ -255,7 +256,6 @@ static int ion_mm_heap_allocate(struct ion_heap *heap,
 	mutex_init(&pBufferInfo->lock);
 	pBufferInfo->pVA = 0;
 	pBufferInfo->MVA = 0;
-	pBufferInfo->eModuleID = -1;
 	pBufferInfo->dbg_info.value1 = 0;
 	pBufferInfo->dbg_info.value2 = 0;
 	pBufferInfo->dbg_info.value3 = 0;
@@ -301,7 +301,7 @@ void ion_mm_heap_free_bufferInfo(struct ion_buffer *buffer)
 		if ((pBufferInfo->destroy_fn) && (pBufferInfo->MVA))
 			pBufferInfo->destroy_fn(buffer, pBufferInfo->MVA);
 
-		if ((pBufferInfo->eModuleID != -1) && (pBufferInfo->MVA))
+		if (pBufferInfo->MVA)
 			m4u_dealloc_mva_sg(pBufferInfo->eModuleID, table, buffer->size, pBufferInfo->MVA);
 
 		kfree(pBufferInfo);
@@ -371,7 +371,7 @@ static int ion_mm_heap_phys(struct ion_heap *heap, struct ion_buffer *buffer,
 	}
 	/* As in ion_fb_heap_phys(): two callers must not both allocate an MVA */
 	mutex_lock(&pBufferInfo->lock);
-	if (pBufferInfo->eModuleID == -1) {
+	if (!pBufferInfo->configured) {
 		mutex_unlock(&pBufferInfo->lock);
 		IONMSG("[ion_mm_heap_phys]: Error. Buffer not configured.\n");
 		return -EFAULT; /* Buffer not configured. */
@@ -789,6 +789,11 @@ long ion_mm_ioctl(struct ion_client *client, unsigned int cmd, unsigned long arg
 
 	switch (Param.mm_cmd) {
 	case ION_MM_CONFIG_BUFFER:
+		if (Param.config_buffer_param.eModuleID >= M4U_PORT_NR) {
+			IONMSG("ion config buffer fail! port=%u.\n", Param.config_buffer_param.eModuleID);
+			ret = -EINVAL;
+			break;
+		}
 		if (Param.config_buffer_param.handle) {
 			struct ion_buffer *buffer;
 			struct ion_handle *kernel_handle;
@@ -814,6 +819,7 @@ long ion_mm_ioctl(struct ion_client *client, unsigned int cmd, unsigned long arg
 				buffer_sec = pBufferInfo->security;
 				if (pBufferInfo->MVA == 0) {
 					pBufferInfo->eModuleID = Param.config_buffer_param.eModuleID;
+					pBufferInfo->configured = true;
 					pBufferInfo->security = Param.config_buffer_param.security;
 					pBufferInfo->coherent = Param.config_buffer_param.coherent;
 				} else {
@@ -840,6 +846,7 @@ long ion_mm_ioctl(struct ion_client *client, unsigned int cmd, unsigned long arg
 				buffer_sec = pBufferInfo->security;
 				if (pBufferInfo->MVA == 0) {
 					pBufferInfo->eModuleID = Param.config_buffer_param.eModuleID;
+					pBufferInfo->configured = true;
 					pBufferInfo->security = Param.config_buffer_param.security;
 					pBufferInfo->coherent = Param.config_buffer_param.coherent;
 				} else {
