@@ -39,7 +39,6 @@ struct mt_pcm_dl1_priv {
 	bool enable_i2s0;
 	bool enable_i2s0_low_jitter;
 	bool enable_i2s1_low_jitter;
-	bool enable_sram;
 	bool enable_bus_clk_boost;
 	unsigned int playback_mux;
 	unsigned int i2s0_clock_mode;
@@ -154,10 +153,9 @@ static int mt_pcm_dl1_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_dma_buffer *dma_buf = &substream->dma_buffer;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct mt_pcm_dl1_priv *priv = snd_soc_platform_get_drvdata(rtd->platform);
 	int ret = 0;
 	size_t buffer_size = params_buffer_bytes(hw_params);
+	bool use_sram;
 
 	pr_debug("%s\n", __func__);
 
@@ -175,15 +173,15 @@ static int mt_pcm_dl1_hw_params(struct snd_pcm_substream *substream,
 #ifdef AUDIO_MEMORY_SRAM
 	if (buffer_size > mt_afe_get_sram_size()) {
 		pr_debug("%s force to use dram for size %zu\n", __func__, buffer_size);
-		priv->enable_sram = false;
+		use_sram = false;
 	} else {
-		priv->enable_sram = true;
+		use_sram = true;
 	}
 #else
-	priv->enable_sram = false;
+	use_sram = false;
 #endif
 
-	if (priv->enable_sram) {
+	if (use_sram) {
 		substream->runtime->dma_bytes = buffer_size;
 		substream->runtime->dma_area = (unsigned char *)mt_afe_get_sram_base_ptr();
 		substream->runtime->dma_addr = mt_afe_get_sram_phy_addr();
@@ -208,13 +206,12 @@ static int mt_pcm_dl1_hw_params(struct snd_pcm_substream *substream,
 static int mt_pcm_dl1_hw_free(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct mt_pcm_dl1_priv *priv = snd_soc_platform_get_drvdata(rtd->platform);
 	int ret = 0;
 
 	pr_debug("%s\n", __func__);
 
-	if (!priv->enable_sram && runtime->dma_area) {
+	/* The core sets dma_buffer_p exactly while DL1 holds a DRAM buffer */
+	if (runtime->dma_buffer_p) {
 		ret = snd_pcm_lib_free_pages(substream);
 		mt_afe_emi_clk_off();
 	}
