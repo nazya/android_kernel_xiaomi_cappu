@@ -91,9 +91,8 @@ u32 pinSetIdx = 0;		/* default main sensor */
 
 /*
  * The power steps of each pin set that are on, one bit per PowerInfo entry.
- * A power-down undoes only these, so that powering a sensor down twice, or
- * after a failed power-up, cannot drop regulator and MCLK references it does
- * not hold.
+ * A power-down that fails half-way leaves the rest recorded, so that the
+ * next power-down or power-up undoes only the steps that are still on.
  */
 static u16 power_steps_on[2];
 
@@ -199,19 +198,6 @@ BOOL hwpowerdown(PowerInformation pwInfo, char *mode_name)
 }
 
 
-static PowerInformation *kdCISModulePowerInfo(char *currSensorName)
-{
-	int pwListIdx;
-
-	for (pwListIdx = 0; pwListIdx < 16; pwListIdx++) {
-		if (PowerOnList.PowerSeq[pwListIdx].SensorName == NULL)
-			break;
-		if (0 == strcmp(PowerOnList.PowerSeq[pwListIdx].SensorName, currSensorName))
-			return PowerOnList.PowerSeq[pwListIdx].PowerInfo;
-	}
-	return NULL;
-}
-
 /* Undo the steps of pinSetIdx that are on, last first; stop at a failure */
 static int kdCISModulePowerDown(PowerInformation *pwInfo, char *mode_name)
 {
@@ -250,9 +236,7 @@ int kdCISModulePowerOn(CAMERA_DUAL_CAMERA_SENSOR_ENUM SensorIdx,
 		return -ENODEV;
 	}
 
-	pwInfo = kdCISModulePowerInfo(currSensorName);
-	if (pwInfo == NULL)
-		return 0;
+	pwInfo = PowerOnList.PowerSeq[pinSetIdx].PowerInfo;
 
 	if (!On) {
 		PK_DBG("kdCISModulePowerOn -off:currSensorName=%s\n", currSensorName);
@@ -264,11 +248,9 @@ int kdCISModulePowerOn(CAMERA_DUAL_CAMERA_SENSOR_ENUM SensorIdx,
 	printk(KERN_ERR "kdCISModulePowerOn get in---\n");
 	printk(KERN_ERR "sensorIdx:%d\n", SensorIdx);
 
-	/* Left on by a failed power-down: powering up again would stack references */
-	if (power_steps_on[pinSetIdx]) {
-		PK_ERR("power steps 0x%x are still on\n", power_steps_on[pinSetIdx]);
+	/* Finish a power-down that failed; powering up over it would stack references */
+	if (power_steps_on[pinSetIdx] && kdCISModulePowerDown(pwInfo, mode_name))
 		return -EBUSY;
-	}
 
 	for (pwIdx = 0; pwIdx < 10 && pwInfo[pwIdx].PowerType != VDD_None; pwIdx++) {
 		if (hwpoweron(pwInfo[pwIdx], mode_name) == FALSE) {

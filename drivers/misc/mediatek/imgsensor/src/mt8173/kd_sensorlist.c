@@ -837,7 +837,7 @@ MUINT32 kd_MultiSensorOpen(void)
 							 CAMERA_HW_DRVNAME1);
 				if (ERROR_NONE != ret) {
 					PK_ERR("[%s]", __func__);
-					return ret;
+					goto err_power_down;
 				}
 				/* wait for power stable */
 				mDELAY(10);
@@ -877,7 +877,7 @@ MUINT32 kd_MultiSensorOpen(void)
 							   (char *)g_invokeSensorNameStr[i], false,
 							   CAMERA_HW_DRVNAME1);
 					PK_ERR("SensorOpen");
-					return ret;
+					goto err_power_down;
 				}
 				/* set i2c slave ID */
 				/* SensorOpen() will reset i2c slave ID */
@@ -887,6 +887,17 @@ MUINT32 kd_MultiSensorOpen(void)
 	}
 	KD_MULTI_FUNCTION_EXIT();
 	return ERROR_NONE;
+
+err_power_down:
+	/* Power down the modules opened before this one, last first */
+	for (i++; i < KDIMGSENSOR_MAX_INVOKE_DRIVERS; i++) {
+		if (g_bEnableDriver[i] && g_pInvokeSensorFunc[i] &&
+		    (g_CurrentSensorIdx & g_invokeSocketIdx[i]))
+			kdCISModulePowerOn((CAMERA_DUAL_CAMERA_SENSOR_ENUM)g_invokeSocketIdx[i],
+					   (char *)g_invokeSensorNameStr[i], false,
+					   CAMERA_HW_DRVNAME1);
+	}
+	return ret;
 }
 
 /*  */
@@ -1198,9 +1209,12 @@ kdModulePowerOn(CAMERA_DUAL_CAMERA_SENSOR_ENUM socketIdx[KDIMGSENSOR_MAX_INVOKE_
 			ret = kdCISModulePowerOn(socketIdx[i], sensorNameStr[i], On, mode_name);
 			if (ERROR_NONE != ret) {
 				PK_ERR("[%s]", __func__);
-				/* Do not leave the modules powered so far on */
-				if (On)
-					kdModulePowerOn(socketIdx, sensorNameStr, false, mode_name);
+				/* Power down the modules powered so far, last first */
+				while (On && i-- > KDIMGSENSOR_INVOKE_DRIVER_0) {
+					if (g_bEnableDriver[i])
+						kdCISModulePowerOn(socketIdx[i], sensorNameStr[i],
+								   false, mode_name);
+				}
 				return ret;
 			}
 		}
@@ -1516,17 +1530,8 @@ inline static int adopt_CAMERA_HW_Open(void)
 	/* KD_IMGSENSOR_PROFILE("kdModulePowerOn"); */
 	/*  */
 	if (g_pSensorFunc) {
+		/* A failed open powers down what it powered */
 		err = g_pSensorFunc->SensorOpen();
-		if (ERROR_NONE != err) {
-			/*
-			   PK_DBG(" ERROR:SensorOpen(), turn off power, Mclk1(0x%x), ISPClk(0x%x), MclkPll(0x%x)\n",
-			   (unsigned int)SENSOR_RD32(0x15008204),
-			   (unsigned int)SENSOR_RD32(0x15000000),
-			   (unsigned int)SENSOR_RD32(0x10000060)
-			   ); */
-			kdModulePowerOn((CAMERA_DUAL_CAMERA_SENSOR_ENUM *) g_invokeSocketIdx,
-					g_invokeSensorNameStr, false, CAMERA_HW_DRVNAME1);
-		}
 	} else {
 		PK_DBG(" ERROR:NULL g_pSensorFunc\n");
 	}
@@ -3461,7 +3466,7 @@ static int camera_hw_open_sensors(struct camera_hw_file *ctx)
 static void camera_hw_close_orphan(void)
 {
 	PK_ERR("closing the sensors of a released file\n");
-	/* MCLK is off first; the steps left on block later power-ups */
+	/* MCLK is off first; the next power-up retries the steps left on */
 	if (adopt_CAMERA_HW_Close())
 		PK_ERR("sensor power-down failed\n");
 	ISP_SensorClockPut();
