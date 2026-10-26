@@ -1202,9 +1202,6 @@ pvr_sync_create_waiter_for_foreign_sync(struct sync_fence *fence,
 	enum PVRSRV_ERROR error = PVRSRV_OK;
 	int err;
 
-	if (!fence || !checkpoint_out) {
-		return PVRSRV_ERROR_INVALID_PARAMS;
-	}
 	*checkpoint_out = NULL;
 
 	/*

@@ -110,12 +110,6 @@ static int g_VsyncOffsetLevel;
 
 static int g_probe_pid = GED_NO_UM_SERVICE;
 
-#ifndef ENABLE_COMMON_DVFS
-typedef void (*gpufreq_input_boost_notify)(unsigned int);
-typedef void (*gpufreq_power_limit_notify)(unsigned int);
-#endif
-extern void mt_gpufreq_input_boost_notify_registerCB(gpufreq_input_boost_notify pCB);
-extern void mt_gpufreq_power_limit_notify_registerCB(gpufreq_power_limit_notify pCB);
 extern void (*mtk_boost_gpu_freq_fp)(void);
 extern void (*mtk_set_bottom_gpu_freq_fp)(unsigned int);
 extern unsigned int (*mtk_get_bottom_gpu_freq_fp)(void);

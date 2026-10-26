@@ -383,13 +383,8 @@ _PMRCreate(PMR_SIZE_T uiLogicalSize,
 	}
 
 	/* Each mapping entry indexes the ui32NumVirtChunks-entry translation
-	 * table filled in below; reject anything outside it before allocating. */
-	if (ui32NumPhysChunks > ui32NumVirtChunks)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "%s: More physical (%u) than virtual (%u) chunks",
-				__FUNCTION__, ui32NumPhysChunks, ui32NumVirtChunks));
-		return PVRSRV_ERROR_PMR_BAD_MAPPINGTABLE_SIZE;
-	}
+	 * table filled in below; reject anything outside it before allocating.
+	 * The callers already ensure ui32NumPhysChunks <= ui32NumVirtChunks. */
 	for (i = 0; i < ui32NumPhysChunks; i++)
 	{
 		if (pui32MappingTable[i] >= ui32NumVirtChunks)

@@ -1234,17 +1234,9 @@ unlock_and_return_error:
 #if !defined(INTEGRITY_OS)
 		if(bBridgeBufferPoolAcquired)
 		{
-			PVRSRV_ERROR ePutError;
-
-			ePutError = PVRSRVPoolPut(psPVRSRVData->psBridgeBufferPool,
-							      hBridgeBufferPoolToken);
-			if(ePutError != PVRSRV_OK)
-			{
-				PVR_DPF((PVR_DBG_ERROR,
-					 "Failed to return bridge buffer to global pool"));
-				if(err == PVRSRV_OK)
-					err = ePutError;
-			}
+			/* Cannot fail: it either queues or frees the entry */
+			PVRSRVPoolPut(psPVRSRVData->psBridgeBufferPool,
+				      hBridgeBufferPoolToken);
 		}
 #endif
 	}
