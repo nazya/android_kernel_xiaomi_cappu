@@ -69,7 +69,8 @@ static void mag_work_func(struct work_struct *work)
 	err = cxt->mag_dev_data.get_data(&x, &y, &z, &status);
 	if (err) {
 		MAG_PR_ERR("get data fails!!\n");
-		return;
+		/* Keep polling: the next measurement may succeed */
+		goto mag_loop;
 	}
 	cxt->drv_data.x = x;
 	cxt->drv_data.y = y;
