@@ -162,12 +162,14 @@ struct bcm_bt_lpm {
 	int bt_host_wake_gpio;
 	int bt_host_wake_irq;
 	int bt_dev_wake_gpio;
-	int bt_host_irq_enabled;
 	int bt_dev_wake_enabled;
 
 	struct hrtimer wake_peer_timer;    /* control wake peer stop */
 	ktime_t wake_peer_delay;
 } bt_lpm_pdata;
+
+/* Guards BT_DEV_WAKE and its timer; nests inside bcm_bt_port's port lock. */
+static DEFINE_SPINLOCK(bt_lpm_lock);
 
 struct mtk_uart *bcm_bt_port = &mtk_uarts[1];        /* ttyMT1 for bcm bt uart channal*/
 #endif
@@ -757,17 +759,32 @@ ssize_t mtk_uart_history_store(struct kobject *kobj, const char *buffer, size_t 
 
 #if defined(MTK_BCM_BT_LPM)
 /*---------------------------------------------------------------------------*/
+/*
+ * With BT_DEV_WAKE low, the controller may sleep at its next idle loop
+ * (libbt sets LPM_HC_IDLE_THRESHOLD 1, about 300 ms), even a few ms after
+ * it has sent something itself. A reply that starts in that window loses
+ * its first bytes, and the controller reports an HCI Hardware Error, which
+ * makes the Bluetooth stack kill itself and restart.
+ *
+ * So assert BT_DEV_WAKE before every transmit and whenever the controller
+ * raises HOST_WAKE, keep it while HOST_WAKE stays high, and drop it
+ * wake_peer_delay after the last of these. Called with bt_lpm_lock held.
+ */
+static void bt_dev_wake_assert(void)
+{
+	if (!bt_lpm_pdata.bt_dev_wake_enabled) {
+		gpio_set_value(bt_lpm_pdata.bt_dev_wake_gpio, 1);
+		bt_lpm_pdata.bt_dev_wake_enabled = 1;
+	}
+	hrtimer_start(&bt_lpm_pdata.wake_peer_timer, bt_lpm_pdata.wake_peer_delay,
+		HRTIMER_MODE_REL);
+}
+
 static irqreturn_t bluetooth_hostwake_irq_handler(int irq, void *dev_id)
 {
-	int host_wake;
-
-	host_wake = gpio_get_value(bt_lpm_pdata.bt_host_wake_gpio);
-
-	printk(KERN_ERR "%s: lpm %s\n", __func__, host_wake ? "off" : "on");
-
-	irq_set_irq_type(irq, host_wake ? IRQF_TRIGGER_FALLING : IRQF_TRIGGER_RISING);
-	printk(KERN_ERR "bt host wake type:%d\n", host_wake);
-
+	spin_lock(&bt_lpm_lock);
+	bt_dev_wake_assert();
+	spin_unlock(&bt_lpm_lock);
 	return IRQ_HANDLED;
 }
 
@@ -776,35 +793,27 @@ static enum hrtimer_restart bt_wake_peer_timeout(struct hrtimer *timer)
 {
 	printk(KERN_ERR "%s +++\n", __func__);
 
-	/* pull down dev_wake pin, need syncliazed?  */
-	if (bt_lpm_pdata.bt_dev_wake_enabled) {
-		printk(KERN_ERR "bt_dev_wake_enabled:%d\n", bt_lpm_pdata.bt_dev_wake_enabled);
-		gpio_set_value(bt_lpm_pdata.bt_dev_wake_gpio, 0);
-		bt_lpm_pdata.bt_dev_wake_enabled = 0;
+	spin_lock(&bt_lpm_lock);
+	/* a transmit or HOST_WAKE may have re-armed us while we waited */
+	if (!hrtimer_is_queued(timer)) {
+		if (gpio_get_value(bt_lpm_pdata.bt_host_wake_gpio)) {
+			bt_dev_wake_assert();
+		} else {
+			gpio_set_value(bt_lpm_pdata.bt_dev_wake_gpio, 0);
+			bt_lpm_pdata.bt_dev_wake_enabled = 0;
+		}
 	}
+	spin_unlock(&bt_lpm_lock);
+	/* never HRTIMER_RESTART: a concurrent hrtimer_start() would hit a BUG_ON */
 	return HRTIMER_NORESTART;
 }
 
-static int mtk_uart_bt_wake_peer_activity(void)
+/* serial core calls wake_peer() under the port lock with interrupts off */
+static void mtk_uart_bt_wake_peer_activity(void)
 {
-	int ret;
-
-	hrtimer_try_to_cancel(&bt_lpm_pdata.wake_peer_timer);
-	if (!bt_lpm_pdata.bt_dev_wake_enabled) {
-		ret =  gpio_direction_output(bt_lpm_pdata.bt_dev_wake_gpio, 1);
-		if (ret < 0) {
-			printk(KERN_ERR "%s: Unable to set direction for dev wake gpio %d\n", __func__,
-					bt_lpm_pdata.bt_dev_wake_gpio);
-			gpio_free(bt_lpm_pdata.bt_dev_wake_gpio);
-			return ret;
-		}
-
-		bt_lpm_pdata.bt_dev_wake_enabled = 1;
-	}
-
-	hrtimer_start(&bt_lpm_pdata.wake_peer_timer, bt_lpm_pdata.wake_peer_delay,
-		HRTIMER_MODE_REL);
-	return 0;
+	spin_lock(&bt_lpm_lock);
+	bt_dev_wake_assert();
+	spin_unlock(&bt_lpm_lock);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -819,12 +828,16 @@ static int  mtk_uart_init_bt_lpm(void)
 	bt_lpm_pdata.bt_host_wake_gpio = -1;
 	bt_lpm_pdata.bt_host_wake_irq = -1;
 	bt_lpm_pdata.bt_dev_wake_gpio = -1;
-	bt_lpm_pdata.bt_host_irq_enabled = 0;
 	bt_lpm_pdata.bt_dev_wake_enabled = 0;
 
 	hrtimer_init(&bt_lpm_pdata.wake_peer_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	/* wake peer timer set 1 sec to check need disable dev_wake pin or not */
-	bt_lpm_pdata.wake_peer_delay = ktime_set(1, 0);
+	/*
+	 * Hold BT_DEV_WAKE as long as the Bluetooth HAL would: it logs
+	 * "lpm_timeout_ms 3000", which libbt computes for this controller as
+	 * LPM_IDLE_THRESHOLD (1) * LPM_IDLE_TIMEOUT_MULTIPLE (10) * 300 ms.
+	 * libbt here leaves BT_DEV_WAKE to this driver.
+	 */
+	bt_lpm_pdata.wake_peer_delay = ktime_set(3, 0);
 	bt_lpm_pdata.wake_peer_timer.function = bt_wake_peer_timeout;
 
 
@@ -854,11 +867,9 @@ static int  mtk_uart_init_bt_lpm(void)
 		return ret;
 	}
 	gpio_set_value(bt_lpm_pdata.bt_host_wake_gpio, 0);
-	/* mtk_uart_suspend() enables it as a wake source; keep it off until then */
-	irq_set_status_flags(bt_lpm_pdata.bt_host_wake_irq, IRQ_NOAUTOEN);
-	ret = request_threaded_irq(bt_lpm_pdata.bt_host_wake_irq, NULL,
-			bluetooth_hostwake_irq_handler,
-			IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
+	/* HOST_WAKE is active high (libbt LPM_HOST_WAKE_POLARITY 1) */
+	ret = request_irq(bt_lpm_pdata.bt_host_wake_irq,
+			bluetooth_hostwake_irq_handler, IRQF_TRIGGER_RISING,
 			"bluetooth host wake", NULL);
 
 	if (ret  < 0)
@@ -2684,15 +2695,15 @@ static int mtk_uart_suspend(struct platform_device *pdev, pm_message_t state)
 		mtk_uart_save(uart);
 #if defined(MTK_BCM_BT_LPM)
 	if (uart == bcm_bt_port) {
-		printk(KERN_ERR "mtk_uart_suspend irq_enable:%d\n", bt_lpm_pdata.bt_host_irq_enabled);
-		if (bt_lpm_pdata.bt_host_irq_enabled == 0) {
-			enable_irq(bt_lpm_pdata.bt_host_wake_irq);
-			ret = irq_set_irq_wake(bt_lpm_pdata.bt_host_wake_irq, 1);
-			if (ret < 0) {
-				printk(KERN_ERR "irq_set_irq_wake enable ret:%d\n", ret);
-			}
-			bt_lpm_pdata.bt_host_irq_enabled = 1;
-		}
+		unsigned long flags;
+
+		/* let the controller sleep while we do; HOST_WAKE stays a wake source */
+		hrtimer_cancel(&bt_lpm_pdata.wake_peer_timer);
+		spin_lock_irqsave(&bt_lpm_lock, flags);
+		gpio_set_value(bt_lpm_pdata.bt_dev_wake_gpio, 0);
+		bt_lpm_pdata.bt_dev_wake_enabled = 0;
+		spin_unlock_irqrestore(&bt_lpm_lock, flags);
+		irq_set_irq_wake(bt_lpm_pdata.bt_host_wake_irq, 1);
 	}
 #endif
 	if (uart && (uart->nport < UART_NR) && (uart != bt_port)) {
@@ -2714,17 +2725,8 @@ static int mtk_uart_resume(struct platform_device *pdev)
 		ret = uart_resume_port(&mtk_uart_drv, &uart->port);
 	}
 #if defined(MTK_BCM_BT_LPM)
-	if (uart == bcm_bt_port) {
-		printk(KERN_ERR "mtk_uart_resume irq_enable:%d\n", bt_lpm_pdata.bt_host_irq_enabled);
-		if (bt_lpm_pdata.bt_host_irq_enabled) {
-			disable_irq(bt_lpm_pdata.bt_host_wake_irq);
-			ret = irq_set_irq_wake(bt_lpm_pdata.bt_host_wake_irq, 0);
-			if (ret < 0) {
-				printk(KERN_ERR "irq_set_irq_wake disable ret:%d\n", ret);
-			}
-			bt_lpm_pdata.bt_host_irq_enabled = 0;
-		}
-	}
+	if (uart == bcm_bt_port)
+		irq_set_irq_wake(bt_lpm_pdata.bt_host_wake_irq, 0);
 #endif
 	return ret;
 }
