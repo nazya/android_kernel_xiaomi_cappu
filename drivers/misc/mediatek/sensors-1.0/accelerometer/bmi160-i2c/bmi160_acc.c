@@ -116,6 +116,8 @@ struct bmi160_acc_i2c_data {
 	bool smd_irq_wake_enabled;
 	bool accel_power_requested;
 	bool smd_power_requested;
+	/* ACC_CONF was written since the last soft reset by this driver */
+	bool acc_conf_written;
 	struct wake_lock smd_wake_lock;
 	spinlock_t smd_irq_lock;
 	u64 smd_irq_timestamp;
@@ -783,66 +785,42 @@ static int bmi160_acc_set_data_range(struct i2c_client *client, u8 dataformat)
  */
 static int bmi160_acc_set_odr(struct i2c_client *client, u8 bwrate)
 {
-	int err = 0;
-	u8 databuf[2] = { 0 };
+	int err;
+	u8 conf;
+	u8 err_reg = 0;
 	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
 
 	mutex_lock(&obj->lock);
-	err =
-	    bma_i2c_read_block(client, BMI160_USER_ACC_CONF_ODR__REG,
-			       &databuf[0], 1);
-	databuf[0] =
-	    BMI160_SET_BITSLICE(databuf[0], BMI160_USER_ACC_CONF_ODR, bwrate);
-	err +=
-	    bma_i2c_write_block(client, BMI160_USER_ACC_CONF_ODR__REG,
-				&databuf[0], 1);
+	/*
+	 * TEMPORARY, until we find who writes ACC_CONF behind this driver.
+	 * On 2026-10-25 the tablet ran with ACC_CONF = 0x58 (acc_bwp 5 with
+	 * acc_us 0, which the BMI160 does not accept in normal mode): the
+	 * chip stopped converting, every sample read zero and auto-rotation
+	 * was dead until the register was rewritten by hand. No kernel path
+	 * writes that bandwidth. Log the old value and ERR_REG whenever the
+	 * bandwidth or undersampling bits are not the ones written below,
+	 * so the next dump shows when it happened. Drop this log once the
+	 * writer is found; keep writing the whole register.
+	 */
+	if (obj->acc_conf_written &&
+	    !bma_i2c_read_block(client, BMI160_USER_ACC_CONF_ADDR, &conf, 1) &&
+	    (conf & ~BMI160_USER_ACC_CONF_ODR__MSK)) {
+		bma_i2c_read_block(client, BMI160_USER_ERROR_ADDR, &err_reg, 1);
+		pr_warn("bmi160_acc: ACC_CONF was 0x%02x, ERR_REG 0x%02x; rewriting it\n",
+			conf, err_reg);
+	}
+
+	/* OSR4 bandwidth (BMI160_ACCEL_OSR4_AVG1), no undersampling, the ODR */
+	conf = BMI160_SET_BITSLICE(0, BMI160_USER_ACC_CONF_ODR, bwrate);
+	err = bma_i2c_write_block(client, BMI160_USER_ACC_CONF_ADDR, &conf, 1);
 	bmi_delay(20);
 	if (err < 0) {
 		GSE_ERR("set bandwidth failed, res = %d\n", err);
 		mutex_unlock(&obj->lock);
 		return BMI160_ACC_ERR_I2C;
 	}
+	obj->acc_conf_written = true;
 	GSE_LOG("set bandwidth = %d ok.\n", bwrate);
-	mutex_unlock(&obj->lock);
-	return err;
-}
-
-/*!
- * @brief Set OSR for acc
- *
- * @param[in] client the pointer of i2c_client
- *
- * @return zero success, non-zero failed
- */
-static int bmi160_acc_set_osr4(struct i2c_client *client)
-{
-	int err = 0;
-	uint8_t databuf[2] = { 0 };
-	struct bmi160_acc_i2c_data *obj = obj_i2c_data;
-	uint8_t bandwidth = BMI160_ACCEL_OSR4_AVG1;
-	uint8_t accel_undersampling_parameter = 0;
-	mutex_lock(&obj->lock);
-	err =
-	    bma_i2c_read_block(client, BMI160_USER_ACC_CONF_ODR__REG,
-			       &databuf[0], 1);
-	databuf[0] =
-	    BMI160_SET_BITSLICE(databuf[0], BMI160_USER_ACC_CONF_ACC_BWP,
-				bandwidth);
-	databuf[0] =
-	    BMI160_SET_BITSLICE(databuf[0],
-				BMI160_USER_ACC_CONF_ACC_UNDER_SAMPLING,
-				accel_undersampling_parameter);
-	err +=
-	    bma_i2c_write_block(client, BMI160_USER_ACC_CONF_ODR__REG,
-				&databuf[0], 1);
-	bmi_delay(10);
-	if (err < 0) {
-		GSE_ERR("set OSR failed.\n");
-		mutex_unlock(&obj->lock);
-		return BMI160_ACC_ERR_I2C;
-	}
-	GSE_LOG("[%s] acc_bmp = %d, acc_us = %d ok.\n", __func__, bandwidth,
-		accel_undersampling_parameter);
 	mutex_unlock(&obj->lock);
 	return err;
 }
@@ -1824,15 +1802,13 @@ static int bmi160_acc_init_client(struct i2c_client *client, int reset_cali)
 	err = bmi160_acc_check_chip_id(client);
 	if (err < 0)
 		return err;
-	/* soft reset */
+	/* soft reset; ACC_CONF then holds the reset value 0x28 */
+	obj->acc_conf_written = false;
 	err = bmi160_set_command_register(0xB6);
 	if (err < 0)
 		return err;
 	bmi_delay(5);
 	err = bmi160_acc_set_odr(client, BMI160_ACCEL_ODR_200HZ);
-	if (err < 0)
-		return err;
-	err = bmi160_acc_set_osr4(client);
 	if (err < 0)
 		return err;
 	err = bmi160_acc_set_data_range(client, BMI160_ACCEL_RANGE_4G);
