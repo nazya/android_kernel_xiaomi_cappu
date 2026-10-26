@@ -777,15 +777,14 @@ long ion_mm_ioctl(struct ion_client *client, unsigned int cmd, unsigned long arg
 	ion_mm_data_t Param;
 	long ret = 0;
 	/* char dbgstr[256]; */
-	unsigned long ret_copy;
 	unsigned int  buffer_sec = 0;
 	enum ion_heap_type buffer_type = 0
 
 	ION_FUNC_ENTER;
 	if (from_kernel)
 		Param = *(ion_mm_data_t *) arg;
-	else
-		ret_copy = copy_from_user(&Param, (void __user *)arg, sizeof(ion_mm_data_t));
+	else if (copy_from_user(&Param, (void __user *)arg, sizeof(ion_mm_data_t)))
+		return -EFAULT;
 
 	switch (Param.mm_cmd) {
 	case ION_MM_CONFIG_BUFFER:
@@ -1090,8 +1089,8 @@ long ion_mm_ioctl(struct ion_client *client, unsigned int cmd, unsigned long arg
 #endif
 	if (from_kernel)
 		*(ion_mm_data_t *)arg = Param;
-	else
-		ret_copy = copy_to_user((void __user *)arg, &Param, sizeof(ion_mm_data_t));
+	else if (copy_to_user((void __user *)arg, &Param, sizeof(ion_mm_data_t)))
+		ret = -EFAULT;
 	ION_FUNC_LEAVE;
 	return ret;
 }
