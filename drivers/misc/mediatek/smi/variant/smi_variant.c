@@ -141,6 +141,7 @@ struct mtk_smi_larb {
 	struct clk		*clk_apb;
 	struct clk		*clk_smi;
 	struct device		*smi;
+	int			larbid;
 };
 
 static void smi_dumpLarb(unsigned int index);
@@ -168,17 +169,6 @@ static unsigned long get_larb_base_addr(int larb_id)
 unsigned long mtk_smi_larb_get_base(int larbid)
 {
 	return get_larb_base_addr(larbid);
-}
-
-static unsigned int smi_get_larb_index(struct device *dev)
-{
-	unsigned int idx;
-
-	for (idx = 0; idx < smi_data->larb_nr; idx++) {
-		if (smi_data->larb[idx] == dev)
-			break;
-	}
-	return idx;
 }
 
 int mtk_smi_larb_clock_on(int larbid, bool pm)
@@ -239,10 +229,6 @@ static void backup_larb_smi(int index)
 	unsigned long larb_offset = 0x200;
 	int total_port_num = 0;
 
-	/* boundary check for larb_port_num and larb_port_backup access */
-	if (index < 0 || index >= smi_data->larb_nr)
-		return;
-
 	total_port_num = smi_data->smi_priv->larb_port_num[index];
 	backup_ptr = smi_data->larb_port_backup + index*SMI_LARB_PORT_NR_MAX;
 
@@ -272,10 +258,6 @@ static void restore_larb_smi(int index)
 	unsigned long larb_offset = 0x200;
 	unsigned int backup_value = 0;
 	int total_port_num = 0;
-
-	/* boundary check for larb_port_num and larb_port_backup access */
-	if (index < 0 || index >= smi_data->larb_nr)
-		return;
 
 	total_port_num = smi_data->smi_priv->larb_port_num[index];
 	backup_ptr = smi_data->larb_port_backup + index*SMI_LARB_PORT_NR_MAX;
@@ -1019,21 +1001,19 @@ static void _mtk_smi_larb_put(struct device *larbdev, bool pm)
 /* The power is alway on during power-domain callback.*/
 static int mtk_smi_larb_runtime_suspend(struct device *dev)
 {
-	unsigned int idx = smi_get_larb_index(dev);
+	struct mtk_smi_larb *larbpriv = dev_get_drvdata(dev);
 	int ret;
 
 	if (!fglarbcallback)
 		return 0;
-	if (idx >= smi_data->larb_nr)
-		return 0;
 
 	ret = _mtk_smi_larb_get(dev, false);
 	if (ret) {
-		dev_warn(dev, "runtime suspend clk-warn larb%d\n", idx);
+		dev_warn(dev, "runtime suspend clk-warn larb%d\n", larbpriv->larbid);
 		return 0;
 	}
 
-	larb_reg_backup(idx);
+	larb_reg_backup(larbpriv->larbid);
 
 	_mtk_smi_larb_put(dev, false);
 	return 0;
@@ -1041,21 +1021,19 @@ static int mtk_smi_larb_runtime_suspend(struct device *dev)
 
 static int mtk_smi_larb_runtime_resume(struct device *dev)
 {
-	unsigned int idx = smi_get_larb_index(dev);
+	struct mtk_smi_larb *larbpriv = dev_get_drvdata(dev);
 	int ret;
 
 	if (!fglarbcallback)
 		return 0;
-	if (idx >= smi_data->larb_nr)
-		return 0;
 
 	ret = _mtk_smi_larb_get(dev, false);
 	if (ret) {
-		dev_warn(dev, "runtime resume clk-warn larb%d\n", idx);
+		dev_warn(dev, "runtime resume clk-warn larb%d\n", larbpriv->larbid);
 		return 0;
 	}
 
-	larb_reg_restore(idx);
+	larb_reg_restore(larbpriv->larbid);
 
 	_mtk_smi_larb_put(dev, false);
 	return 0;
@@ -1113,6 +1091,7 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	larbpriv->larbid = larbid;
 	smi_data->larb_base[larbid] = (unsigned long)larbpriv->base;
 	smi_data->larb[larbid] = dev;
 	smi_data->larb_nr++;
