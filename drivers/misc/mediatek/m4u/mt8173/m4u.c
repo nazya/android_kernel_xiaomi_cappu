@@ -1547,16 +1547,11 @@ int m4u_dump_secpgd(unsigned int port, unsigned int faultmva)
 	return 0;
 }
 
-int m4u_config_port_tee(int port, int virt, int sec, int dis, int dir)
+int m4u_config_port_tee(M4U_PORT_ID port, int virt, int sec, int dis, int dir)
 {
 	MTEEC_PARAM param[4];
 	uint32_t paramTypes;
 	TZ_RESULT ret;
-
-	if (port < 0 || port >= M4U_PORT_UNKNOWN) {
-		M4UMSG("config err %d\n", port);
-		return -1;
-	}
 
 	M4ULOG_LOW("config_port-sec port=%s Vir=%d Sec=%d Dis=%d Dir=%d\n",
 			m4u_get_port_name(port),
@@ -1619,7 +1614,8 @@ static long MTK_M4U_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 			M4UMSG("MTK_M4U_T_ALLOC_MVA,copy_from_user failed:%d\n", ret);
 			return -EFAULT;
 		}
-
+		if (m4u_module.port >= M4U_PORT_NR)
+			return -EINVAL;
 
 		ret = m4u_alloc_mva(client, m4u_module.port, m4u_module.BufAddr,
 				    NULL, m4u_module.BufSize, m4u_module.prot, m4u_module.flags,
@@ -1644,6 +1640,8 @@ static long MTK_M4U_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 				M4UMSG("MTK_M4U_T_DEALLOC_MVA,copy_from_user failed:%d\n", ret);
 				return -EFAULT;
 			}
+			if (m4u_module.port >= M4U_PORT_NR)
+				return -EINVAL;
 
 			ret = m4u_dealloc_mva(client, m4u_module.port, m4u_module.MVAStart);
 			if (ret)

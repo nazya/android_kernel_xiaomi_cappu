@@ -18,7 +18,7 @@
 #include "m4u_port.h"
 #include <linux/scatterlist.h>
 
-typedef int M4U_PORT_ID;
+typedef unsigned int M4U_PORT_ID;
 
 #define M4U_PROT_READ   (1<<0)	/* buffer can be read by engine */
 #define M4U_PROT_WRITE  (1<<1)	/* buffer can be write by engine */

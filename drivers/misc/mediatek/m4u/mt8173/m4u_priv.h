@@ -307,7 +307,7 @@ typedef struct _M4U_DMA {
 
 #ifdef M4U_TEE_SERVICE_ENABLE
 extern bool m4u_tee_en;
-int m4u_config_port_tee(int port, int virt, int sec, int dis, int dir);
+int m4u_config_port_tee(M4U_PORT_ID port, int virt, int sec, int dis, int dir);
 int smi_reg_restore_sec(void);
 int smi_reg_backup_sec(void);
 /*int m4u_config_port_array_tee(unsigned char* port_array);*/
