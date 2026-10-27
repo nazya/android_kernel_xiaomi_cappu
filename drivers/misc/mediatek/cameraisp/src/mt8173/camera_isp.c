@@ -3249,22 +3249,15 @@ static void ISP_ResetMclk(void)
  * particular order. The sensor driver holds an ISP clock reference from
  * sensor open until the sensor is powered down, so the power-down still
  * reaches clocked MCLK registers after the last ISP file is gone.
+ * The ISP file need not be open: its clocks come from probe, and MCLK only
+ * needs them on.
  */
-int ISP_SensorClockGet(void)
+void ISP_SensorClockGet(void)
 {
-	int ret = 0;
-
 	mutex_lock(&SensorClockLock);
-	/* The HAL opens the ISP before it powers a sensor */
-	if (IspInfo.UserCount) {
-		ISP_EnableClock(MTRUE);
-		SensorClockHeld = true;
-	} else {
-		ret = -ENODEV;
-	}
+	ISP_EnableClock(MTRUE);
+	SensorClockHeld = true;
 	mutex_unlock(&SensorClockLock);
-
-	return ret;
 }
 EXPORT_SYMBOL(ISP_SensorClockGet);
 

@@ -3449,10 +3449,7 @@ static int camera_hw_open_sensors(struct camera_hw_file *ctx)
 	if (g_sensor_owner || g_close_after_lens)
 		return -EBUSY;
 
-	ret = ISP_SensorClockGet();
-	if (ret)
-		return ret;
-
+	ISP_SensorClockGet();
 	ret = adopt_CAMERA_HW_Open();
 	if (ret) {
 		ISP_SensorClockPut();
@@ -3609,11 +3606,9 @@ static long CAMERA_HW_Ioctl(struct file *a_pstFile,
 			i4RetValue = -EBUSY;
 			break;
 		}
-		i4RetValue = ISP_SensorClockGet();
-		if (!i4RetValue) {
-			i4RetValue = adopt_CAMERA_HW_CheckIsAlive();
-			ISP_SensorClockPut();
-		}
+		ISP_SensorClockGet();
+		i4RetValue = adopt_CAMERA_HW_CheckIsAlive();
+		ISP_SensorClockPut();
 		break;
 	case KDIMGSENSORIOC_X_GET_SOCKET_POS:
 		i4RetValue = kdGetSocketPostion((unsigned int *)pBuff);
