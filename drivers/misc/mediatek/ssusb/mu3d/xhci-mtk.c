@@ -1049,6 +1049,12 @@ int ssusb_host_init(struct ssusb_mtk *ssusb)
 	xhci->dev.parent = ssusb->dev;
 	xhci->dev.dma_mask = ssusb->dev->dma_mask;
 	dma_set_coherent_mask(&xhci->dev, ssusb->dev->coherent_dma_mask);
+	/*
+	 * Let xhci-plat enable its wakeup, as mainline xhci-mtk does: the
+	 * host is then in the wakeup path in suspend, and its USB power
+	 * domain stays on (active_wakeup).
+	 */
+	device_set_wakeup_capable(&xhci->dev, true);
 	ssusb->xhci = xhci;
 
 	ret = platform_device_add_resources(xhci, ssusb->xhci_rscs, SSUSB_XHCI_RSCS_NUM);
