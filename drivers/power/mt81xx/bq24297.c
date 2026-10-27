@@ -1026,14 +1026,11 @@ static u32 charging_boost_enable(void *data)
 		bq24297_set_en_hiz(0x0);
 		bq24297_set_chg_config(0);	/* Charge disabled */
 		bq24297_set_otg_config(0x1);	/* OTG */
-#ifdef CONFIG_POWER_EXT
+		/* No kicks in suspend: an expired watchdog would end the boost */
 		bq24297_set_watchdog(0);
-#endif
 	} else {
 		bq24297_set_otg_config(0x0);	/* OTG & Charge disabled */
-#ifdef CONFIG_POWER_EXT
-		bq24297_set_watchdog(1);
-#endif
+		bq24297_set_watchdog(1);	/* WDT 40s */
 	}
 
 	return status;
