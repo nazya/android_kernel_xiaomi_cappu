@@ -128,6 +128,8 @@ static struct i2c_driver akm09912_i2c_driver = {
 #ifdef CONFIG_OF
 		   .of_match_table = mag_of_match,
 #endif
+		   /* The mag core keeps polling get_data(), which uses this client */
+		   .suppress_bind_attrs = true,
 		   },
 	.probe = akm09912_i2c_probe,
 	.remove = akm09912_i2c_remove,
