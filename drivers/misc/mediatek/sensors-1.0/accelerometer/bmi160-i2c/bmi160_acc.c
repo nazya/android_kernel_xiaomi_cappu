@@ -2661,7 +2661,7 @@ static ssize_t bmi_register_store(struct device_driver *ddri, const char *buf,
 
 	err = sscanf(buf, "%3d %3d", &reg_addr, &data);
 	if (err < 2)
-		return err;
+		return -EINVAL;
 
 	if (data > 0xff)
 		return -EINVAL;
