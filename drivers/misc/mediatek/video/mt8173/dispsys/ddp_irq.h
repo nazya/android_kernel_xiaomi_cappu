@@ -27,7 +27,7 @@ int disp_unregister_irq_callback(DDP_IRQ_CALLBACK cb);
 
 void disp_register_irq(unsigned int irq_num, char *device_name);
 int ddp_irq_init(void);
-void disp_dsi_cmdq_esd_own(unsigned int index, bool owned);
+void disp_irq_sync(DISP_MODULE_ENUM module);
 void disp_dump_emi_status(void);
 irqreturn_t disp_irq_handler(int irq, void *dev_id);
 

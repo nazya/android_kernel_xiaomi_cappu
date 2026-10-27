@@ -35,24 +35,12 @@ static wait_queue_head_t disp_irq_log_wq;
 static int disp_irq_log_module;
 
 static int irq_init;
-static bool dsi_cmdq_esd_owned[2];
 
-/* Sleepable ESD context, with the primary path locked and RD_RDY IRQ masked. */
-void disp_dsi_cmdq_esd_own(unsigned int index, bool owned)
+/* Wait for a running handler of a module's IRQ */
+void disp_irq_sync(DISP_MODULE_ENUM module)
 {
-	DISP_MODULE_ENUM module = index ? DISP_MODULE_DSI1 : DISP_MODULE_DSI0;
-
-	if (owned)
-		WRITE_ONCE(dsi_cmdq_esd_owned[index], true);
-	/*
-	 * Claim: drain old callbacks before submission. Release: after the final
-	 * W0C clear, drain stale status snapshots while ownership is still true.
-	 */
-	smp_mb();
 	/* DSI1 has no handler; synchronize_irq() then returns at once */
 	synchronize_irq(ddp_irq_map[module]);
-	if (!owned)
-		WRITE_ONCE(dsi_cmdq_esd_owned[index], false);
 }
 
 static unsigned int cnt_rdma_underflow[3];
@@ -248,6 +236,7 @@ irqreturn_t disp_irq_handler(int irq, void *dev_id)
 {
 	DISP_MODULE_ENUM module = DISP_MODULE_UNKNOWN;
 	unsigned long reg_val = 0;
+	unsigned long inten;
 	unsigned int index = 0;
 	unsigned int mutexID = 0;
 
@@ -257,11 +246,16 @@ irqreturn_t disp_irq_handler(int irq, void *dev_id)
 		index = (irq == ddp_irq_map[DISP_MODULE_DSI0]) ? 0 : 1;
 		module =
 		    (irq == ddp_irq_map[DISP_MODULE_DSI0]) ? DISP_MODULE_DSI0 : DISP_MODULE_DSI1;
-		reg_val =
-		    (DISP_REG_GET(DISPSYS_DSI0_BASE + 0xC + index * DISP_INDEX_OFFSET) & 0xff);
-		/* INTSTA is W0C: preserve CMDQ's RD_RDY and hide it from callbacks. */
-		if (READ_ONCE(dsi_cmdq_esd_owned[index]))
-			reg_val &= ~1U;
+		/*
+		 * INTSTA is W0C. Ack and report only the enabled bits, so that a
+		 * completion whose interrupt is masked stays for its poller: RD_RDY
+		 * while CMDQ reads the panel for the ESD check. INTEN is read first:
+		 * a bit that is masked when the handler starts is never acked, even
+		 * if it sets during the handler.
+		 */
+		inten = DISP_REG_GET(DISPSYS_DSI0_BASE + 0x8 + index * DISP_INDEX_OFFSET);
+		reg_val = DISP_REG_GET(DISPSYS_DSI0_BASE + 0xC + index * DISP_INDEX_OFFSET) &
+			  inten & 0xff;
 		DISP_CPU_REG_SET(DISPSYS_DSI0_BASE + 0xC + index * DISP_INDEX_OFFSET, ~reg_val);
 		/* MMProfileLogEx(ddp_mmp_get_events()->DSI_IRQ[index], MMProfileFlagPulse, reg_val, 0); */
 	} else if (irq == ddp_irq_map[DISP_MODULE_DPI0] || irq == ddp_irq_map[DISP_MODULE_DPI1]) {

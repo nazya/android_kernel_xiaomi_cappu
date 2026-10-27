@@ -3430,10 +3430,14 @@ static int dsi_esd_build_cmdq(DISP_MODULE_ENUM module, cmdqRecHandle cmdq,
 		dsi_esd.link = link;
 		dsi_esd.passed = false;
 		dsi_esd.rd_rdy_enabled = DSI_REG[link]->DSI_INTEN.RD_RDY;
-		/* Avoid a level IRQ storm while CMDQ owns the read completion. */
+		/*
+		 * With RD_RDY masked the IRQ handler leaves the read completion to
+		 * CMDQ and no level IRQ storms. Wait out a handler that read INTEN
+		 * before the mask, as it could still ack the new RD_RDY.
+		 */
 		DSI_OUTREGBIT(NULL, DSI_INT_ENABLE_REG, DSI_REG[link]->DSI_INTEN,
 			      RD_RDY, 0);
-		disp_dsi_cmdq_esd_own(link, true);
+		disp_irq_sync(link ? DISP_MODULE_DSI1 : DISP_MODULE_DSI0);
 		return 0;
 	}
 
@@ -3484,8 +3488,8 @@ static int dsi_esd_build_cmdq(DISP_MODULE_ENUM module, cmdqRecHandle cmdq,
 
 	/* FREE follows synchronous flush/CMP or the CPU reset on failure. */
 	cmdqBackupFreeSlot(dsi_esd.slot);
+	/* Clear RD_RDY before unmasking it, so no handler sees CMDQ's read */
 	DSI_OUTREG32(NULL, &DSI_REG[link]->DSI_INTSTA, ~1U);
-	disp_dsi_cmdq_esd_own(link, false);
 	DSI_OUTREGBIT(NULL, DSI_INT_ENABLE_REG, DSI_REG[link]->DSI_INTEN,
 		      RD_RDY, dsi_esd.rd_rdy_enabled);
 	if (dsi_esd.passed && module == DISP_MODULE_DSIDUAL)
