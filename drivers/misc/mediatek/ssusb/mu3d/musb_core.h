@@ -251,9 +251,10 @@ enum ssusb_mode {
 /*
 * @SSUSB_STR_NONE: especially used by tablet: clocks, ports, mu3d and xhci
 *		are all power down and phy also enter low-power mode when no cable is plugged in.
-*		but keep LDOs on to let charger detect cable type. when plug in cable or OTG
-*		device or host is enabled again, at the same time system never enter suspend
-*		mode, so it doesn't need to support suspend/resume  at the case.
+*		but keep LDOs on to let charger detect cable type. a plugged cable or OTG
+*		device powers them on again. with an OTG device the system may suspend:
+*		xhci-plat suspends the host, then mu3d powers down the host ip, phy and
+*		clocks until resume, as the mainline mtu3 driver does.
 * @SSUSB_STR_ALIVE: mainly used by box: when system suspend, usb should keep
 *		on link with devices such as wifi, bt and ethernet which  layed out on board;
 *		that means only close clocks and force phy enter low-power mode

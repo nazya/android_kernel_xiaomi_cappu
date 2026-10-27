@@ -2060,9 +2060,18 @@ static int mtu3d_suspend(struct device *dev)
 	 * J:I think it does _NOT_ have to do anything. Because when the phone/tablet
 	 * with USB cable,the system does _NOT_ enter suspend mode. At the normal case,
 	 * the USB driver calls PHY savecurrent, when USB cable is plugged out.
+	 *
+	 * In the power-saving mode the IP is already down without an OTG
+	 * device. With one, xhci-plat has suspended the host; power down the
+	 * host IP, phy and clocks after it, as the mainline mtu3 driver does.
 	 */
-	if (ssusb->is_power_saving_mode)
+	if (ssusb->is_power_saving_mode) {
+		if (mtk_is_host_mode()) {
+			ssusb_host_suspend(ssusb);
+			low_power_enter(ssusb);
+		}
 		return 0;
+	}
 
 	if ((SSUSB_MODE_DEVICE != ssusb->drv_mode) && SSUSB_STR_DEEP == ssusb->str_mode) {
 		mtk_xhci_ip_exit(ssusb);
@@ -2091,8 +2100,17 @@ static int mtu3d_resume(struct device *dev)
 	if (ssusb->wakeup_src)
 		usb_wakeup_disable(ssusb);
 
-	if (ssusb->is_power_saving_mode)
+	if (ssusb->is_power_saving_mode) {
+		if (mtk_is_host_mode()) {
+			ret = low_power_exit(ssusb);
+			if (ret) {
+				mu3d_dbg(K_ERR, "%s failed to enable clks & ldo\n", __func__);
+				return ret;
+			}
+			ssusb_host_resume(ssusb);
+		}
 		return 0;
+	}
 
 	ret = low_power_exit(ssusb);
 	if (ret) {
