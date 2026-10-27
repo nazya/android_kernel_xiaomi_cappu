@@ -33,8 +33,6 @@ int mtk_otg_switch_init(struct ssusb_mtk *ssusb);
 void mtk_otg_switch_exit(struct ssusb_mtk *ssusb);
 int ssusb_host_init(struct ssusb_mtk *ssusb);
 void ssusb_host_exit(struct ssusb_mtk *ssusb);
-void ssusb_host_suspend(struct ssusb_mtk *ssusb);
-void ssusb_host_resume(struct ssusb_mtk *ssusb);
 int ssusb_host_enable(struct ssusb_mtk *ssusb);
 int ssusb_host_disable(struct ssusb_mtk *ssusb);
 
