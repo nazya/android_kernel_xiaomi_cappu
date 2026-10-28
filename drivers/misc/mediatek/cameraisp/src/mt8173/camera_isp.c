@@ -9193,12 +9193,24 @@ static __tcmfunc irqreturn_t ISP_Irq_CAM(MINT32 Irq, void *DeviceId)
 		/* if(IrqStatus[ISP_IRQ_TYPE_INT_STATUSX] &     STATUSX_WARNING) { */
 		/* LOG_INF("warning: fifo may overrun"); */
 		/* } */
+		/*
+		 * Done bits share the register, so test the error bits alone:
+		 * only a non-warning error is logged as one.
+		 */
 		if (IrqStatus[ISP_IRQ_TYPE_INT_STATUSX] & (~STATUSX_WARNING)) {
-			LOG_ERR("ISP INT ERR_P1	0x%x\n", IrqStatus[ISP_IRQ_TYPE_INT_STATUSX]);
+			if (IrqStatus[ISP_IRQ_TYPE_INT_STATUSX] &
+			    IspInfo.IrqInfo.ErrMask[ISP_IRQ_TYPE_INT_STATUSX] & ~STATUSX_WARNING)
+				LOG_ERR("ISP INT ERR_P1	0x%x\n", IrqStatus[ISP_IRQ_TYPE_INT_STATUSX]);
+			else
+				LOG_INF("ISP INT warning P1 0x%x\n", IrqStatus[ISP_IRQ_TYPE_INT_STATUSX]);
 			g_ISPIntErr[_IRQ] |= IrqStatus[ISP_IRQ_TYPE_INT_STATUSX];
 		}
 		if (IrqStatus[ISP_IRQ_TYPE_INT_STATUS2X] & (~STATUSX_WARNING)) {
-			LOG_ERR("ISP INT ERR_P1_D 0x%x\n", IrqStatus[ISP_IRQ_TYPE_INT_STATUS2X]);
+			if (IrqStatus[ISP_IRQ_TYPE_INT_STATUS2X] &
+			    IspInfo.IrqInfo.ErrMask[ISP_IRQ_TYPE_INT_STATUS2X] & ~STATUSX_WARNING)
+				LOG_ERR("ISP INT ERR_P1_D 0x%x\n", IrqStatus[ISP_IRQ_TYPE_INT_STATUS2X]);
+			else
+				LOG_INF("ISP INT warning P1_D 0x%x\n", IrqStatus[ISP_IRQ_TYPE_INT_STATUS2X]);
 			g_ISPIntErr[_IRQ_D] |= IrqStatus[ISP_IRQ_TYPE_INT_STATUS2X];
 		}
 	}
