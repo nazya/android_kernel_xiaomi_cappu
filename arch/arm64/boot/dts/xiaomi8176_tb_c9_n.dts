@@ -575,7 +575,7 @@
 	hall_intr1 {
 		label = "lid_back";
 		gpios = <&pio 70 1>;
-		linux,code = <18>;
+		linux,code = <0x10>; /* SW_MACHINE_COVER: cover folded behind */
 		linux,input-type = <5>;
 		gpio-key,wakeup;
 	};
