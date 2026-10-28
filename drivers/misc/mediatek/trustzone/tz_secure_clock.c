@@ -327,6 +327,11 @@ unsigned int update_ret = 0;
 uint32_t nsec = THREAD_COUNT_FREQ;
 
 ret = KREE_CreateSession(TZ_TA_SECURETIME_UUID, &icnt_session);
+if (ret == TZ_RESULT_ERROR_ITEM_NOT_FOUND) {
+	/* The TEE image has no secure time TA (cappu's has none) */
+	pr_info("update_securetime_thread_gb: no secure time TA in the TEE\n");
+	return 1;
+}
 if (ret != TZ_RESULT_SUCCESS) {
 	pr_warn("update_securetime_thread_gb CreateSession error %d\n", ret);
 	return 1;
