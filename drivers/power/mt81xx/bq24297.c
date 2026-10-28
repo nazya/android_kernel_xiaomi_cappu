@@ -1188,7 +1188,8 @@ static void bq24297_driver_shutdown(struct i2c_client *client)
 static int bq24297_driver_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	int ret = 0;
-	struct regulator *i2c_reg = devm_regulator_get(&client->dev, "reg-i2c");
+	/* Not every board gives this supply; cappu's DT does not */
+	struct regulator *i2c_reg = devm_regulator_get_optional(&client->dev, "reg-i2c");
 
 	pr_debug("[bq24297_driver_probe]\n");
 
