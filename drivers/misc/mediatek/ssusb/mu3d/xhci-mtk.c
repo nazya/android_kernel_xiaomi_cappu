@@ -805,7 +805,13 @@ static irqreturn_t iddig_eint_isr(int irq, void *otg_sx)
 
 	mu3d_dbg(K_INFO, "%s : schedule to delayed work\n", __func__);
 	disable_irq_nosync(otg_switch->iddig_eint_num);
-	schedule_delayed_work(&otg_switch->switch_dwork, OTG_IDDIG_DEBOUNCE * HZ / 1000);
+	/*
+	 * The switch touches the host IP, which is powered down in suspend:
+	 * as mainline mtu3, run it on the freezable workqueue, so that it
+	 * never runs while devices are suspended.
+	 */
+	queue_delayed_work(system_freezable_wq, &otg_switch->switch_dwork,
+			   OTG_IDDIG_DEBOUNCE * HZ / 1000);
 	return IRQ_HANDLED;
 }
 
