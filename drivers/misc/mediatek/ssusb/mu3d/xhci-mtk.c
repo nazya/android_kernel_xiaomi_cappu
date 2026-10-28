@@ -629,6 +629,11 @@ static void ssusb_mode_switch_lowpw(struct work_struct *work)
 		mtk_xhci_ip_exit(ssusb);
 		ssusb_power_save(ssusb);
 		switch_set_state(&otg_switch->otg_state, 0);
+		/*
+		 * A charger plugged in during the switch was seen as absent,
+		 * since the port was still a host; detect it again now.
+		 */
+		wake_up_bat();
 
 		/* expect next isr is for id-pin in action */
 		otg_switch->next_idpin_state = IDPIN_IN;
