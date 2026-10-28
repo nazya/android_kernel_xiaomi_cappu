@@ -258,11 +258,6 @@ static const struct snd_kcontrol_new mt8173_evb_controls[] = {
 		     mt8173_evb_channel_cap_set),
 };
 
-static const struct snd_soc_dapm_route mt8173_audio_map[] = {
-	{"AIF Playback-9-34", NULL, "AIF3 Capture"},
-	{"AIF Playback-9-37", NULL, "AIF3 Capture"},
-};
-
 static int mt8173_evb_set_bias_level(struct snd_soc_card *card,
 				struct snd_soc_dapm_context *dapm,
 				enum snd_soc_bias_level level)
@@ -293,8 +288,6 @@ static struct snd_soc_card mt8173_evb_card = {
 	.num_links = ARRAY_SIZE(mt8173_evb_dais),
 	.controls = mt8173_evb_controls,
 	.num_controls = ARRAY_SIZE(mt8173_evb_controls),
-	.dapm_routes = mt8173_audio_map,
-	.num_dapm_routes = ARRAY_SIZE(mt8173_audio_map),
 };
 
 static int mt8173_evb_dev_probe(struct platform_device *pdev)
