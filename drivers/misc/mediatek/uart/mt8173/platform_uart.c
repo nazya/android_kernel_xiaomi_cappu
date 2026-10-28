@@ -2312,8 +2312,13 @@ void switch_uart_gpio(int uartport, int gpioopid)
 		  uart_gpio_cmds[uartport][gpioopid], pins_uart);
 
 	if (IS_ERR(pins_uart)) {
-		pr_err("[UART%d][PinC]%s pinctrl_lockup(%d, %s) fail!! pctrl:%p, err:%ld\n", uartport, __func__,
-		       uartport, uart_gpio_cmds[uartport][gpioopid], ppinctrl, PTR_ERR(pins_uart));
+		/* These pin states are optional; a board may define none */
+		if (PTR_ERR(pins_uart) == -ENODEV)
+			pr_debug("[UART%d][PinC]%s no state %s\n", uartport, __func__,
+				 uart_gpio_cmds[uartport][gpioopid]);
+		else
+			pr_err("[UART%d][PinC]%s pinctrl_lockup(%d, %s) fail!! pctrl:%p, err:%ld\n", uartport, __func__,
+			       uartport, uart_gpio_cmds[uartport][gpioopid], ppinctrl, PTR_ERR(pins_uart));
 		return;
 	}
 
