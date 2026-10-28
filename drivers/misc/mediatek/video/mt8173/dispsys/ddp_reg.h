@@ -1098,13 +1098,18 @@ STATIC_ASSERT(0x0098 == offsetof(DSI_REGS, DSI_3D_CON));
 			& ~REG_FLD_MASK(field))|REG_FLD_VAL((field), (val)), reg32);  \
 	} while (0)
 
+/*
+ * A module base need not be page aligned (LVDSTX0 is at 0x10215800), so
+ * match an address in the base's page at or above the base.
+ */
 static inline unsigned int ddp_addr_convert_va2pa(unsigned long va)
 {
 	unsigned int i = 0;
 
 	for (i = 0; i < DISP_MODULE_NUM; i++) {
-		if (ddp_regbase_va[i] == (va & (~0xfffl)))
-			return (ddp_regbase_pa[i] + (va & 0xfffl));
+		if ((ddp_regbase_va[i] & (~0xfffl)) == (va & (~0xfffl)) &&
+		    va >= ddp_regbase_va[i])
+			return (ddp_regbase_pa[i] + (va - ddp_regbase_va[i]));
 	}
 	return 0;
 }
@@ -1114,8 +1119,9 @@ static inline unsigned long ddp_addr_convert_pa2va(unsigned int pa)
 	unsigned int i = 0;
 
 	for (i = 0; i < DISP_MODULE_NUM; i++) {
-		if (ddp_regbase_pa[i] == (pa & (~0xfff)))
-			return (ddp_regbase_va[i] + (pa & 0xfff));
+		if ((ddp_regbase_pa[i] & (~0xfff)) == (pa & (~0xfff)) &&
+		    pa >= ddp_regbase_pa[i])
+			return (ddp_regbase_va[i] + (pa - ddp_regbase_pa[i]));
 	}
 	return 0;
 }
