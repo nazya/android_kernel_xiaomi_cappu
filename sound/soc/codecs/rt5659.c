@@ -5174,7 +5174,7 @@ static int rt5659_i2c_probe(struct i2c_client *i2c,
 	struct rt5659_priv *rt5659;
 	int ret;
 	unsigned int val;
-	struct regulator *regulator_1v8, *regulator_3v3, *regulator_5v;
+	struct regulator *regulator_1v8;
 #if 0
 	struct pinctrl *hwid_gpio_pinctrl;
 	struct pinctrl_state *set_state;
@@ -5223,18 +5223,6 @@ static int rt5659_i2c_probe(struct i2c_client *i2c,
 	} else {
 		pr_info("for p2 and later build, hardware_id = %d.\n", hardware_id);
 	}
-
-	regulator_3v3 = regulator_get(NULL, rt5659->pdata.regulator_3v3);
-	if (IS_ERR(regulator_3v3))
-		dev_err(&i2c->dev, "Fail to get regulator_3v3\n");
-	else if (regulator_enable(regulator_3v3))
-		dev_err(&i2c->dev, "Fail to enable regulator_3v3\n");
-
-	regulator_5v = regulator_get(NULL, rt5659->pdata.regulator_5v);
-	if (IS_ERR(regulator_5v))
-		dev_err(&i2c->dev, "Fail to get regulator_5v\n");
-	else if (regulator_enable(regulator_5v))
-		dev_err(&i2c->dev, "Fail to enable regulator_5v\n");
 
 	if (gpio_is_valid(rt5659->pdata.gpio_ldo)) {
 		if (gpio_request(rt5659->pdata.gpio_ldo, "rt5659-35"))

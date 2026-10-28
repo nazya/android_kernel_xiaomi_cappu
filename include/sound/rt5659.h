@@ -43,8 +43,6 @@ struct rt5659_platform_data {
 	enum rt5659_jd_src jd_src;
 
 	const char *regulator_1v8;
-	const char *regulator_3v3;
-	const char *regulator_5v;
 
 	int gpio_ldo;
 	int gpio_reset;
