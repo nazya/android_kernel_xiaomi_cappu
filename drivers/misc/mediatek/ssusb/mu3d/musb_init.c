@@ -1290,8 +1290,10 @@ static int get_regulators(struct platform_device *pdev, struct ssusb_mtk *ssusb)
 
 	ssusb->vusb33 = regulator_get(&pdev->dev, "reg-vusb33");
 	if (IS_ERR_OR_NULL(ssusb->vusb33)) {
-		mu3d_dbg(K_ERR, "fail to get vusb33\n");
 		ret = PTR_ERR(ssusb->vusb33);
+		/* The PMIC regulators come later at boot; probe is retried */
+		if (ret != -EPROBE_DEFER)
+			mu3d_dbg(K_ERR, "fail to get vusb33\n");
 		goto err;
 	}
 	mu3d_dbg(K_INFO, "mu3d get vusb33 ok\n");
@@ -1732,7 +1734,8 @@ static int get_ssusb_rscs(struct platform_device *pdev, struct ssusb_mtk *ssusb)
 	mu3d_dbg(K_INFO, "mu3d irq : %d\n", ssusb->mu3d_irq);
 	ret = get_regulators(pdev, ssusb);
 	if (ret < 0) {
-		mu3d_dbg(K_ERR, "fail to get regulators\n");
+		if (ret != -EPROBE_DEFER)
+			mu3d_dbg(K_ERR, "fail to get regulators\n");
 		goto err;
 	}
 
@@ -1910,7 +1913,8 @@ static int mtu3d_probe(struct platform_device *pdev)
 
 	ret = get_ssusb_rscs(pdev, ssusb);
 	if (ret) {
-		mu3d_dbg(K_ERR, "fail to get mu3d resources\n");
+		if (ret != -EPROBE_DEFER)
+			mu3d_dbg(K_ERR, "fail to get mu3d resources\n");
 		goto put_regmap;
 	}
 
