@@ -891,11 +891,12 @@ static long vcodec_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned 
 								    sizeof(VAL_EVENT_T));
 					}
 
+					/* On first use nothing waited; the 1 ms probe always times out */
 					if (VAL_RESULT_INVALID_ISR == eValRet) {
-						MODULE_MFV_LOGE
-						    ("[ERROR][VCODEC_LOCKHW] DecHWLockEvent TimeOut, CurrentTID = %d\n",
-						     current->pid);
 						if (FirstUseDecHW != 1) {
+							MODULE_MFV_LOGE
+							    ("[ERROR][VCODEC_LOCKHW] DecHWLockEvent TimeOut, CurrentTID = %d\n",
+							     current->pid);
 							mutex_lock(&VdecHWLock);
 							if (grVcodecDecHWLock.pvHandle == 0)
 								MODULE_MFV_LOGE
@@ -1081,11 +1082,12 @@ static long vcodec_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned 
 								    sizeof(VAL_EVENT_T));
 					}
 
+					/* On first use nothing waited; the 1 ms probe always times out */
 					if (VAL_RESULT_INVALID_ISR == eValRet) {
-						MODULE_MFV_LOGE
-						    ("[VCODEC_LOCKHW][ERROR][VCODEC_LOCKHW] EncHWLockEvent TimeOut, CurrentTID = %d\n",
-						     current->pid);
 						if (FirstUseEncHW != 1) {
+							MODULE_MFV_LOGE
+							    ("[VCODEC_LOCKHW][ERROR][VCODEC_LOCKHW] EncHWLockEvent TimeOut, CurrentTID = %d\n",
+							     current->pid);
 							mutex_lock(&VencHWLock);
 							if (grVcodecEncHWLock.pvHandle == 0) {
 								MODULE_MFV_LOGE
