@@ -643,6 +643,75 @@ static void ssusb_mode_switch(struct work_struct *work)
 }
 
 /*
+ * A powered hub or an OTG charging adapter may already drive VBUS when the
+ * port becomes a host. Then do not boost against it: stay the host and let
+ * the battery driver charge from it.
+ */
+static void ssusb_host_vbus_on(struct otg_switch_mtk *otg_switch)
+{
+	mutex_lock(&otg_switch->vbus_lock);
+	if (bat_charger_get_detect_status()) {
+		otg_switch->ext_vbus = true;
+		bat_set_otg_ext_vbus(true);
+		mu3d_dbg(K_WARNIN, "%s: VBUS from outside, charging from it\n", __func__);
+	} else {
+		ssusb_set_vbus(&otg_switch->p0_vbus, 1);
+	}
+	mutex_unlock(&otg_switch->vbus_lock);
+}
+
+static void ssusb_host_vbus_off(struct otg_switch_mtk *otg_switch)
+{
+	cancel_delayed_work(&otg_switch->ext_vbus_dwork);
+	mutex_lock(&otg_switch->vbus_lock);
+	if (otg_switch->ext_vbus) {
+		otg_switch->ext_vbus = false;
+		bat_set_otg_ext_vbus(false);
+	} else {
+		ssusb_set_vbus(&otg_switch->p0_vbus, 0);
+	}
+	mutex_unlock(&otg_switch->vbus_lock);
+}
+
+static void ssusb_otg_ext_vbus_lost_work(struct work_struct *work)
+{
+	struct otg_switch_mtk *otg_switch = container_of(to_delayed_work(work),
+					struct otg_switch_mtk, ext_vbus_dwork);
+
+	mutex_lock(&otg_switch->vbus_lock);
+	if (otg_switch->ext_vbus) {
+		otg_switch->ext_vbus = false;
+		ssusb_set_vbus(&otg_switch->p0_vbus, 1);
+		mu3d_dbg(K_WARNIN, "%s: VBUS from outside gone, boost on\n", __func__);
+	}
+	mutex_unlock(&otg_switch->vbus_lock);
+}
+
+/*
+ * The battery driver saw the outside VBUS of a host port go away. Stop
+ * counting the port as a charger at once, but boost only if the port is
+ * still a host a while later: when the adapter itself is pulled, its ID
+ * goes after VBUS, and the switch then turns the host off, so that an
+ * empty port never gets our VBUS.
+ */
+void ssusb_otg_ext_vbus_lost(void)
+{
+	struct otg_switch_mtk *otg_switch;
+
+	if (!g_otg_state)
+		return;
+	otg_switch = container_of(g_otg_state, struct otg_switch_mtk, otg_state);
+
+	mutex_lock(&otg_switch->vbus_lock);
+	if (otg_switch->ext_vbus) {
+		bat_set_otg_ext_vbus(false);
+		queue_delayed_work(system_freezable_wq, &otg_switch->ext_vbus_dwork,
+				   2 * OTG_IDDIG_DEBOUNCE * HZ / 1000);
+	}
+	mutex_unlock(&otg_switch->vbus_lock);
+}
+
+/*
 * the case is used by platform which only support one usb port,
 * especially such as tablet/phone which demand to close all
 * LDO, clocks and suspend phy when no cable plug in.
@@ -663,7 +732,7 @@ static void ssusb_mode_switch_lowpw(struct work_struct *work)
 		ssusb_host_init(ssusb);
 
 		switch_set_state(&otg_switch->otg_state, 1);
-		ssusb_set_vbus(&otg_switch->p0_vbus, 1);
+		ssusb_host_vbus_on(otg_switch);
 
 		/* expect next isr is for id-pin out action */
 		otg_switch->next_idpin_state = IDPIN_OUT;
@@ -672,7 +741,7 @@ static void ssusb_mode_switch_lowpw(struct work_struct *work)
 
 	} else {		/* IDPIN_OUT */
 		mu3d_dbg(K_DEBUG, "%s to device\n", __func__);
-		ssusb_set_vbus(&otg_switch->p0_vbus, 0);
+		ssusb_host_vbus_off(otg_switch);
 		/* Stop the host while its ports still run, so that it can halt */
 		ssusb_host_exit(ssusb);
 		mtk_xhci_ip_exit(ssusb);
@@ -761,6 +830,7 @@ static void ssusb_iddig_eint_exit(struct otg_switch_mtk *otg_sx)
 {
 	free_irq(otg_sx->iddig_eint_num, otg_sx);
 	cancel_delayed_work(&otg_sx->switch_dwork);
+	cancel_delayed_work(&otg_sx->ext_vbus_dwork);
 
 	mu3d_dbg(K_INFO, "otg iddig unregister done.\n");
 }
@@ -859,6 +929,8 @@ int mtk_otg_switch_init(struct ssusb_mtk *ssusb)
 		switch_set_state(&otg_switch->otg_state, 0);
 
 	wake_lock_init(&otg_switch->xhci_wakelock, WAKE_LOCK_SUSPEND, "xhci.wakelock");
+	mutex_init(&otg_switch->vbus_lock);
+	INIT_DELAYED_WORK(&otg_switch->ext_vbus_dwork, ssusb_otg_ext_vbus_lost_work);
 
 	if (is_eint_used(otg_switch->otg_mode)) {
 		otg_switch->next_idpin_state = IDPIN_IN;

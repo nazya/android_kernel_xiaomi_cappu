@@ -395,6 +395,11 @@ struct otg_switch_mtk {
 	enum ssusb_vbus_mode vbus_mode;
 	int port0_u2;
 	int port0_u3;
+	/* host mode with VBUS from an external supply, not from our boost */
+	bool ext_vbus;
+	struct mutex vbus_lock;
+	/* boosts after that outside VBUS went, if the port is still a host */
+	struct delayed_work ext_vbus_dwork;
 };
 
 

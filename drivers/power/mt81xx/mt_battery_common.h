@@ -363,8 +363,12 @@ extern void mt_usb_disconnect(void);
 #define mt_usb_disconnect() do { } while (0)
 #endif
 
+/* USB: the outside VBUS of the OTG host port went away */
+extern void ssusb_otg_ext_vbus_lost(void);
+
 #ifdef CONFIG_MTK_SMART_BATTERY
 extern void wake_up_bat(void);
+extern void bat_set_otg_ext_vbus(bool on);
 extern unsigned long BAT_Get_Battery_Voltage(int polling_mode);
 extern void mt_battery_charging_algorithm(void);
 #if defined(CONFIG_MTK_JEITA_STANDARD_SUPPORT)
@@ -374,6 +378,7 @@ extern int do_jeita_state_machine(void);
 #else
 
 #define wake_up_bat()			do {} while (0)
+#define bat_set_otg_ext_vbus(on)	do {} while (0)
 #define BAT_Get_Battery_Voltage(polling_mode)	({ 0; })
 
 #endif

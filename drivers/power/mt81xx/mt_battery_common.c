@@ -245,6 +245,8 @@ static bool bat_meter_timeout;
 static DEFINE_MUTEX(bat_mutex);
 static DEFINE_MUTEX(charger_type_mutex);
 static DECLARE_WAIT_QUEUE_HEAD(bat_thread_wq);
+/* The port is an OTG host and VBUS comes from an outside supply */
+static bool otg_ext_vbus;
 
 /* ////////////////////////////////////////////////////////////////////////////// */
 /* FOR ANDROID BATTERY SERVICE */
@@ -351,6 +353,10 @@ bool upmu_is_chr_det(void)
 		battery_log(BAT_LOG_FULL, "[upmu_is_chr_det] Charger exist and USB is not host\n");
 
 		return true;
+	} else if (otg_ext_vbus) {
+		battery_log(BAT_LOG_FULL, "[upmu_is_chr_det] USB is host on outside VBUS\n");
+
+		return true;
 	}
 
 	battery_log(BAT_LOG_FULL, "[upmu_is_chr_det] Charger exist but USB is host\n");
@@ -374,6 +380,23 @@ void wake_up_bat(void)
 	_do_wake_up_bat_thread();
 }
 EXPORT_SYMBOL(wake_up_bat);
+
+/* Called by the USB driver when its host port gets or loses outside VBUS */
+void bat_set_otg_ext_vbus(bool on)
+{
+	mutex_lock(&charger_type_mutex);
+	/* Forget a type detected while the port was still a device */
+	if (on)
+		BMT_status.charger_type = CHARGER_UNKNOWN;
+	otg_ext_vbus = on;
+	mutex_unlock(&charger_type_mutex);
+	wake_up_bat();
+}
+EXPORT_SYMBOL(bat_set_otg_ext_vbus);
+
+void __weak ssusb_otg_ext_vbus_lost(void)
+{
+}
 
 /* for meter update */
 static void wake_up_bat_update_meter(void)
@@ -2458,7 +2481,15 @@ static void mt_battery_charger_detect_check(void)
 			}
 		}
 
-		if (BMT_status.charger_type == CHARGER_UNKNOWN) {
+		if (BMT_status.charger_type == CHARGER_UNKNOWN && otg_ext_vbus) {
+			/*
+			 * Charger detection would take the phy from the host;
+			 * charge at 500 mA, the USB default.
+			 */
+			mutex_lock(&charger_type_mutex);
+			BMT_status.charger_type = APPLE_0_5A_CHARGER;
+			mutex_unlock(&charger_type_mutex);
+		} else if (BMT_status.charger_type == CHARGER_UNKNOWN) {
 			bat_charger_type_detection();
 			if ((BMT_status.charger_type == STANDARD_HOST)
 			    || (BMT_status.charger_type == CHARGING_HOST)) {
@@ -2472,6 +2503,10 @@ static void mt_battery_charger_detect_check(void)
 			    BMT_status.charger_type);
 
 	} else {
+		/* The outside supply of the OTG host went away: power the port */
+		if (otg_ext_vbus)
+			ssusb_otg_ext_vbus_lost();
+
 		if (BMT_status.charger_exist) {
 #ifdef CONFIG_MTK_KERNEL_POWER_OFF_CHARGING
 			if (g_platform_boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT)
