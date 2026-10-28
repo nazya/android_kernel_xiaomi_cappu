@@ -326,6 +326,55 @@ static void host_ports_disable(struct ssusb_mtk *ssusb)
 	mu3d_dbg(K_DEBUG, "%s out\n", __func__);
 }
 
+/*
+ * System suspend with an OTG device attached, as ssusb_host_disable(ssusb,
+ * true) of the mainline mtu3 driver: power down the ports but keep them
+ * enabled, power down the host IP and wait for it to sleep.
+ */
+void ssusb_host_suspend(struct ssusb_mtk *ssusb)
+{
+	void __iomem *sif_base = ssusb->sif_base;
+	int i;
+
+	for (i = 0; i < ssusb->u3_ports; i++)
+		mu3d_setmsk(sif_base, SSUSB_U3_CTRL(i), SSUSB_U3_PORT_PDN);
+
+	for (i = 0; i < ssusb->u2_ports; i++)
+		mu3d_setmsk(sif_base, SSUSB_U2_CTRL(i), SSUSB_U2_PORT_PDN);
+
+	mu3d_setmsk(sif_base, U3D_SSUSB_IP_PW_CTRL1, SSUSB_IP_HOST_PDN);
+
+	if (!wait_for_value(sif_base, U3D_SSUSB_IP_PW_STS1, SSUSB_IP_SLEEP_STS,
+			    SSUSB_IP_SLEEP_STS, 1, 100))
+		mu3d_dbg(K_ERR, "%s: host ip did not sleep\n", __func__);
+}
+
+/* The resume side, as the mainline ssusb_host_enable() */
+void ssusb_host_resume(struct ssusb_mtk *ssusb)
+{
+	void __iomem *sif_base = ssusb->sif_base;
+	u32 temp;
+	int i;
+
+	mu3d_clrmsk(sif_base, U3D_SSUSB_IP_PW_CTRL1, SSUSB_IP_HOST_PDN);
+
+	for (i = 0; i < ssusb->u3_ports; i++) {
+		temp = mu3d_readl(sif_base, SSUSB_U3_CTRL(i));
+		temp &= ~(SSUSB_U3_PORT_PDN | SSUSB_U3_PORT_DIS);
+		temp |= SSUSB_U3_PORT_HOST_SEL;
+		mu3d_writel(sif_base, SSUSB_U3_CTRL(i), temp);
+	}
+
+	for (i = 0; i < ssusb->u2_ports; i++) {
+		temp = mu3d_readl(sif_base, SSUSB_U2_CTRL(i));
+		temp &= ~(SSUSB_U2_PORT_PDN | SSUSB_U2_PORT_DIS);
+		temp |= SSUSB_U2_PORT_HOST_SEL;
+		mu3d_writel(sif_base, SSUSB_U2_CTRL(i), temp);
+	}
+
+	mtk_chk_usb_ip_ck_sts(ssusb);
+}
+
 /* only for mt8173 ip sleep */
 int ssusb_host_enable(struct ssusb_mtk *ssusb)
 {
