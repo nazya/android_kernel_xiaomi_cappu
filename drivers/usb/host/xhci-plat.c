@@ -49,6 +49,15 @@ static void xhci_plat_quirks(struct device *dev, struct xhci_hcd *xhci)
 	xhci->quirks |= XHCI_SPURIOUS_SUCCESS;
 	xhci->quirks |= XHCI_LPM_SUPPORT;
 #endif
+#ifdef CONFIG_SSUSB_MTK_XHCI
+	/*
+	 * The SSUSB host does not always keep its state through system
+	 * suspend, even with its power domain on: after some sleeps it
+	 * stopped answering commands. Re-initialise it at resume; USB
+	 * persist then reset-resumes the attached devices.
+	 */
+	xhci->quirks |= XHCI_RESET_ON_RESUME;
+#endif
 }
 
 /* called during probe() after chip reset completes */
