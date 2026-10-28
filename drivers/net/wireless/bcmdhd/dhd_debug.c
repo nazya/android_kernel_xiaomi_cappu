@@ -872,7 +872,7 @@ static void dhd_dbg_ring_deinit(dhd_pub_t *dhdp, dhd_dbg_ring_t *ring)
 /*
  * dhd_dbg_set_event_log_tag : modify the state of an event log tag
  */
-void dhd_dbg_set_event_log_tag(dhd_pub_t *dhdp, uint16 tag, uint8 set)
+static int dhd_dbg_set_event_log_tag(dhd_pub_t *dhdp, uint16 tag, uint8 set)
 {
 	wl_el_tag_params_t pars;
 	char *cmd = "event_log_tag_control";
@@ -887,16 +887,18 @@ void dhd_dbg_set_event_log_tag(dhd_pub_t *dhdp, uint16 tag, uint8 set)
 	if (!bcm_mkiovar
 	    (cmd, (char *) &pars, sizeof(pars), iovbuf, sizeof(iovbuf))) {
 		DHD_ERROR(("%s mkiovar failed\n", __FUNCTION__));
-		return;
+		return BCME_ERROR;
 	}
 
 	ret =
 	    dhd_wl_ioctl_cmd(dhdp, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE,
 			     0);
-	if (ret) {
+	/* Firmware without event log tags answers BCME_UNSUPPORTED */
+	if (ret && ret != BCME_UNSUPPORTED) {
 		DHD_ERROR(("%s set log tag iovar failed %d\n", __FUNCTION__,
 			   ret));
 	}
+	return ret;
 }
 
 int
@@ -908,6 +910,7 @@ dhd_dbg_set_configuration(dhd_pub_t *dhdp, int ring_id, int log_level,
 	unsigned long lock_flags;
 	int i, array_len = 0;
 	struct log_level_table *log_level_tbl = NULL;
+	bool fw_has_tags = TRUE;
 	if (!dhdp || !dhdp->dbg)
 		return BCME_BADADDR;
 
@@ -949,7 +952,10 @@ dhd_dbg_set_configuration(dhd_pub_t *dhdp, int ring_id, int log_level,
 		DHD_RING(("%s TAG(%s) is %s for the ring(%s)\n", __FUNCTION__,
 			  log_level_tbl[i].desc, (set) ? "SET" : "CLEAR",
 			  ring->name));
-		dhd_dbg_set_event_log_tag(dhdp, log_level_tbl[i].tag, set);
+		if (fw_has_tags &&
+		    dhd_dbg_set_event_log_tag(dhdp, log_level_tbl[i].tag, set) ==
+		    BCME_UNSUPPORTED)
+			fw_has_tags = FALSE;
 	}
 	return BCME_OK;
 }
