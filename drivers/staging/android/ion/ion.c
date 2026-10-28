@@ -1509,7 +1509,9 @@ static long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 						data.allocation.flags, true);
 		if (IS_ERR(handle)) {
 			ret = PTR_ERR(handle);
-			IONMSG("ION_IOC_ALLOC handle is invalid. ret = %d.\n", ret);
+			IONMSG("ION_IOC_ALLOC handle is invalid. ret = %d, len %zu, heap mask 0x%x, flags 0x%x.\n",
+			       ret, data.allocation.len, data.allocation.heap_id_mask,
+			       data.allocation.flags);
 			return ret;
 		}
 
