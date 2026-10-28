@@ -610,7 +610,10 @@ static u32 bmt_find_closest_level(const u32 *pList, u32 number, u32 level)
 				return pList[i];
 		}
 
-		battery_log(BAT_LOG_CRTI, "Can't find closest level, small value first \r\n");
+		/* pList[0] is the lowest step: a level below it gets that step */
+		if (level < pList[0])
+			battery_log(BAT_LOG_FULL, "level %u below the lowest step %u\r\n",
+				    level, pList[0]);
 		return pList[0];
 	}
 
@@ -619,7 +622,8 @@ static u32 bmt_find_closest_level(const u32 *pList, u32 number, u32 level)
 			return pList[i];
 	}
 
-	battery_log(BAT_LOG_CRTI, "Can't find closest level, large value first \r\n");
+	battery_log(BAT_LOG_FULL, "level %u below the lowest step %u\r\n",
+		    level, pList[number - 1]);
 	return pList[number - 1];
 
 }
