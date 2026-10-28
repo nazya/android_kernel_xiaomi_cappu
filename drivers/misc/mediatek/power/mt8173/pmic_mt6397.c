@@ -917,6 +917,25 @@ static int mt6397_irq_init(struct mt6397_chip_priv *chip)
 	return ret;
 }
 
+/*
+ * The HOMEKEY input only matters when the keypad maps a key to it
+ * (mediatek,kpd-sw-rstkey). As mainline mtk-pmic-keys, which requests
+ * the interrupt only for keys in the DT, leave it off otherwise: an
+ * unconnected input reads as pressed and fires at every resume.
+ */
+static bool mt6397_homekey_used(void)
+{
+	struct device_node *node;
+	u32 key = 0;
+
+	node = of_find_compatible_node(NULL, NULL, "mediatek,mt8173-keypad");
+	if (node) {
+		of_property_read_u32(node, "mediatek,kpd-sw-rstkey", &key);
+		of_node_put(node);
+	}
+	return key != 0;
+}
+
 static int mt6397_irq_handler_init(struct mt6397_chip_priv *chip)
 {
 	int i;
@@ -928,6 +947,9 @@ static int mt6397_irq_handler_init(struct mt6397_chip_priv *chip)
 	for (i = 0; i < ARRAY_SIZE(mt6397_irqs); i++) {
 		int ret, irq;
 		struct mt6397_irq_data *data = &mt6397_irqs[i];
+
+		if (data->irq_id == MT6397_IRQ_HOMEKEY && !mt6397_homekey_used())
+			data->enabled = false;
 
 		irq = irq_find_mapping(chip->domain, data->irq_id);
 		ret = request_threaded_irq(irq, NULL, data->action_fn,
