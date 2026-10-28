@@ -1752,6 +1752,15 @@ int xhci_drop_endpoint(struct usb_hcd *hcd, struct usb_device *udev,
 	     cpu_to_le32(EP_STATE_DISABLED)) ||
 	    le32_to_cpu(ctrl_ctx->drop_flags) &
 	    xhci_get_endpoint_flag(&ep->desc)) {
+#ifdef CONFIG_SSUSB_MTK_XHCI
+		/*
+		 * A reset leaves the endpoint disabled but its bandwidth
+		 * still booked; release it, as mainline xhci_mtk_drop_ep()
+		 * does after xhci_drop_endpoint() in every case.
+		 */
+		if (xhci->quirks & XHCI_MTK_HOST)
+			xhci_mtk_drop_ep_quirk(hcd, udev, ep);
+#endif
 		xhci_warn(xhci, "xHCI %s called with disabled ep %p\n",
 				__func__, ep);
 		return 0;
