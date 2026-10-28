@@ -125,6 +125,8 @@ int primary_display_cur_dst_mode = 0;
 
 static unsigned long dc_vAddr[DISP_INTERNAL_BUFFER_COUNT];
 int primary_trigger_cnt = 0;
+/* Counts the times the panel went to sleep, for the present fence worker */
+static unsigned int primary_sleep_seq;
 unsigned int gPresentFenceIndex = 0;
 
 #define PRIMARY_DISPLAY_TRIGGER_CNT (1)
@@ -2157,6 +2159,7 @@ int primary_display_esd_recovery(void)
 			dpmgr_path_power_off(pgc->ovl2mem_path_handle, CMDQ_DISABLE);
 		primary_trigger_cnt = 0;
 		pgc->state = DISP_SLEPT;
+		primary_sleep_seq++;
 		ret = -EIO;
 		goto done;
 	}
@@ -2653,6 +2656,7 @@ static struct task_struct *present_fence_release_worker_task;
 static int _present_fence_release_worker_thread(void *data)
 {
 	int ret = 0;
+	unsigned int sleep_seq;
 	struct sched_param param = {.sched_priority = 87 }; /* RTPM_PRIO_FB_THREAD */
 
 	sched_setscheduler(current, SCHED_RR, &param);
@@ -2662,6 +2666,7 @@ static int _present_fence_release_worker_thread(void *data)
 	return 0;
 #endif
 	while (1) {
+		sleep_seq = ACCESS_ONCE(primary_sleep_seq);
 		if (pgc->state == DISP_SLEPT)
 			ret = dpmgr_wait_event(pgc->dpmgr_handle, DISP_PATH_EVENT_IF_VSYNC);
 		else
@@ -2695,7 +2700,9 @@ static int _present_fence_release_worker_thread(void *data)
 			_primary_path_unlock(__func__);
 			DISP_PRINTF(DDP_FENCE1_LOG, "RPF/%d/%d\n", gPresentFenceIndex,
 				     gPresentFenceIndex - layer_info->timeline->value);
-		} else if ((0 == ret) && (pgc->state != DISP_SLEPT)) {
+		} else if ((0 == ret) && (pgc->state != DISP_SLEPT) &&
+			   sleep_seq == ACCESS_ONCE(primary_sleep_seq)) {
+			/* A wait that spanned a panel sleep has no vsync to miss */
 			DISPMSG("%s wait vsync timeout\n", __func__);
 		}
 	}
@@ -3352,6 +3359,7 @@ int primary_display_suspend(void)
 	MMProfileLogEx(ddp_mmp_get_events()->primary_suspend, MMProfileFlagPulse, 0, 8);
 
 	pgc->state = DISP_SLEPT;
+	primary_sleep_seq++;
 done:
 	_primary_path_unlock(__func__);
 	_primary_path_esd_check_unlock();
