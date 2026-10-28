@@ -61,6 +61,7 @@
 #define  CHR_ERROR                      0x1005
 #define  CHR_HOLD				        0x1006
 #define  CHR_CMD_HOLD                   0x1007
+#define  CHR_LIMIT                      0x1008	/* held at the charge limit */
 
 /*****************************************************************************
  *  Call State

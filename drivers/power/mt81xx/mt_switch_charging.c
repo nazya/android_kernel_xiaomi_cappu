@@ -808,6 +808,23 @@ int BAT_BatteryCmdHoldAction(void)
 	return PMU_STATUS_OK;
 }
 
+/* At the charge limit: stop charging, but keep running from the charger */
+static void BAT_BatteryLimitAction(void)
+{
+	battery_log(BAT_LOG_CRTI, "[BATTERY] At the charge limit\n");
+
+	BMT_status.bat_full = false;
+	BMT_status.bat_in_recharging_state = false;
+	/* the hold may last for days; keep the safety timer from expiring */
+	BMT_status.total_charging_time = 0;
+	BMT_status.PRE_charging_time = 0;
+	BMT_status.CC_charging_time = 0;
+	BMT_status.TOPOFF_charging_time = 0;
+	BMT_status.POSTFULL_charging_time = 0;
+
+	bat_charger_enable(false);
+}
+
 int BAT_BatteryStatusFailAction(void)
 {
 	battery_log(BAT_LOG_CRTI, "[BATTERY] BAD Battery status... Charging Stop !!\n\r");
@@ -862,6 +879,10 @@ void mt_battery_charging_algorithm(void)
 
 	case CHR_CMD_HOLD:
 		BAT_BatteryCmdHoldAction();
+		break;
+
+	case CHR_LIMIT:
+		BAT_BatteryLimitAction();
 		break;
 
 	case CHR_ERROR:

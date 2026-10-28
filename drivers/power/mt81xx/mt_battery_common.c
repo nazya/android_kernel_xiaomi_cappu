@@ -247,6 +247,10 @@ static DEFINE_MUTEX(charger_type_mutex);
 static DECLARE_WAIT_QUEUE_HEAD(bat_thread_wq);
 /* The port is an OTG host and VBUS comes from an outside supply */
 static bool otg_ext_vbus;
+/* Charge limit, in percent, as mainline charge_control_{start,end}_threshold */
+static int charge_end_threshold = 100;
+static int charge_start_threshold = -1;	/* not set: 5 below the end */
+static bool charge_limit_hold;
 
 /* ////////////////////////////////////////////////////////////////////////////// */
 /* FOR ANDROID BATTERY SERVICE */
@@ -300,6 +304,8 @@ static enum power_supply_property battery_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_AVG,
 	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
 	/* Add for EM
 	   POWER_SUPPLY_PROP_TemperatureR,
 	   POWER_SUPPLY_PROP_TempBattVoltage,
@@ -477,6 +483,56 @@ static int usb_get_property(struct power_supply *psy,
 	return ret;
 }
 
+static int bat_charge_start_threshold(void)
+{
+	if (charge_start_threshold >= 0 && charge_start_threshold < charge_end_threshold)
+		return charge_start_threshold;
+	return charge_end_threshold > 5 ? charge_end_threshold - 5 : 0;
+}
+
+/* Stop charging at the end threshold, start again at the start threshold */
+static bool mt_battery_charge_limited(void)
+{
+	if (charge_end_threshold >= 100)
+		charge_limit_hold = false;
+	else if (BMT_status.UI_SOC >= charge_end_threshold)
+		charge_limit_hold = true;
+	else if (BMT_status.UI_SOC <= bat_charge_start_threshold())
+		charge_limit_hold = false;
+
+	return charge_limit_hold;
+}
+
+static int battery_set_property(struct power_supply *psy,
+				enum power_supply_property psp,
+				const union power_supply_propval *val)
+{
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+		if (val->intval < 0 || val->intval > 100)
+			return -EINVAL;
+		charge_start_threshold = val->intval;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		if (val->intval < 1 || val->intval > 100)
+			return -EINVAL;
+		charge_end_threshold = val->intval;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	_do_wake_up_bat_thread();
+	return 0;
+}
+
+static int battery_property_is_writeable(struct power_supply *psy,
+					 enum power_supply_property psp)
+{
+	return psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
+	       psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD;
+}
+
 static int battery_get_property(struct power_supply *psy,
 				enum power_supply_property psp, union power_supply_propval *val)
 {
@@ -507,6 +563,12 @@ static int battery_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
 		val->intval = data->BAT_VOLTAGE_AVG;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+		val->intval = bat_charge_start_threshold();
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		val->intval = charge_end_threshold;
 		break;
 /*
 	case POWER_SUPPLY_PROP_TemperatureR:
@@ -572,6 +634,8 @@ static struct battery_data battery_main = {
 		.properties = battery_props,
 		.num_properties = ARRAY_SIZE(battery_props),
 		.get_property = battery_get_property,
+		.set_property = battery_set_property,
+		.property_is_writeable = battery_property_is_writeable,
 		},
 /* CC: modify to have a full power supply status */
 #if defined(CONFIG_POWER_EXT)
@@ -1737,7 +1801,10 @@ static void battery_update(struct battery_data *bat_data)
 			else
 				resetBatteryMeter = mt_battery_100Percent_tracking_check();
 
-			bat_data->BAT_STATUS = POWER_SUPPLY_STATUS_CHARGING;
+			if (BMT_status.bat_charging_state == CHR_LIMIT)
+				bat_data->BAT_STATUS = POWER_SUPPLY_STATUS_NOT_CHARGING;
+			else
+				bat_data->BAT_STATUS = POWER_SUPPLY_STATUS_CHARGING;
 		} else {	/* No Battery, Only Charger */
 
 			bat_data->BAT_STATUS = POWER_SUPPLY_STATUS_UNKNOWN;
@@ -2211,6 +2278,14 @@ static void mt_battery_CheckBatteryStatus(void)
 		return;
 	}
 
+	if (mt_battery_charge_limited()) {
+		BMT_status.bat_charging_state = CHR_LIMIT;
+		return;
+	} else if (BMT_status.bat_charging_state == CHR_LIMIT) {
+		BMT_status.bat_charging_state = CHR_PRE;
+		return;
+	}
+
 }
 
 
@@ -2506,6 +2581,8 @@ static void mt_battery_charger_detect_check(void)
 		/* The outside supply of the OTG host went away: power the port */
 		if (otg_ext_vbus)
 			ssusb_otg_ext_vbus_lost();
+		/* A charger plugged in again charges up to the limit */
+		charge_limit_hold = false;
 
 		if (BMT_status.charger_exist) {
 #ifdef CONFIG_MTK_KERNEL_POWER_OFF_CHARGING
