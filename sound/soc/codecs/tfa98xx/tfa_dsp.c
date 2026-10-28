@@ -2416,11 +2416,13 @@ enum Tfa98xx_Error show_current_state(Tfa98xx_handle_t handle)
 	enum Tfa98xx_Error err = Tfa98xx_Error_Ok;
 	int manstate = -1;
 
-	if (tfa98xx_dev_family(handle) == 2) {
-		manstate = TFA_GET_BF(handle, MANSTATE);
-		if (manstate < 0)
-			return -manstate;
-	}
+	/* Only family 2 chips have the MANSTATE field to show */
+	if (tfa98xx_dev_family(handle) != 2)
+		return err;
+
+	manstate = TFA_GET_BF(handle, MANSTATE);
+	if (manstate < 0)
+		return -manstate;
 
 	pr_info("Current HW manager state: ");
 
