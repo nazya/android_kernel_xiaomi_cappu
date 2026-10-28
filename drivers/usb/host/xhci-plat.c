@@ -313,6 +313,48 @@ static int xhci_plat_remove(struct platform_device *dev)
 }
 
 #ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_SSUSB_MTK_XHCI
+/*
+ * The SSUSB host is not halted in system suspend, as in mainline and
+ * ChromeOS 3.18 xhci-mtk: the parent ssusb device powers its ports and
+ * IP down, and the IP keeps the host state. Only stop the roothub
+ * polling, so that no register is read while the clocks are off.
+ *
+ * The host still runs until the parent powers it down, and a port event
+ * then would start the polling again (handle_port_status()), with a
+ * timer that reads the registers after the clocks are off. So take the
+ * interrupt away first; this also waits for a handler still running.
+ */
+static int xhci_plat_suspend(struct device *dev)
+{
+	struct usb_hcd	*hcd = dev_get_drvdata(dev);
+	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
+
+	disable_irq(hcd->irq);
+
+	xhci_dbg(xhci, "%s: stop port polling\n", __func__);
+	clear_bit(HCD_FLAG_POLL_RH, &hcd->flags);
+	del_timer_sync(&hcd->rh_timer);
+	clear_bit(HCD_FLAG_POLL_RH, &xhci->shared_hcd->flags);
+	del_timer_sync(&xhci->shared_hcd->rh_timer);
+	return 0;
+}
+
+static int xhci_plat_resume(struct device *dev)
+{
+	struct usb_hcd	*hcd = dev_get_drvdata(dev);
+	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
+
+	enable_irq(hcd->irq);
+
+	xhci_dbg(xhci, "%s: restart port polling\n", __func__);
+	set_bit(HCD_FLAG_POLL_RH, &hcd->flags);
+	usb_hcd_poll_rh_status(hcd);
+	set_bit(HCD_FLAG_POLL_RH, &xhci->shared_hcd->flags);
+	usb_hcd_poll_rh_status(xhci->shared_hcd);
+	return 0;
+}
+#else
 static int xhci_plat_suspend(struct device *dev)
 {
 	struct usb_hcd	*hcd = dev_get_drvdata(dev);
@@ -336,6 +378,7 @@ static int xhci_plat_resume(struct device *dev)
 
 	return xhci_resume(xhci, 0);
 }
+#endif
 
 static const struct dev_pm_ops xhci_plat_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(xhci_plat_suspend, xhci_plat_resume)
