@@ -1204,6 +1204,15 @@ static int msdc_ops_switch_volt(struct mmc_host *mmc, struct mmc_ios *ios)
 			return -EINVAL;
 		}
 
+		/*
+		 * The core tries 3.3V first at each power up; the eMMC's vqmmc
+		 * (vio18) cannot give it, and the core then falls back to 1.8V.
+		 */
+		if (!regulator_is_supported_voltage(mmc->supply.vqmmc, min_uv, max_uv)) {
+			dev_dbg(host->dev, "vqmmc does not support %d uV\n", min_uv);
+			return -EINVAL;
+		}
+
 		ret = regulator_set_voltage(mmc->supply.vqmmc, min_uv, max_uv);
 		if (ret) {
 			dev_err(host->dev,
