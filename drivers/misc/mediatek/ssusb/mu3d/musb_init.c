@@ -809,6 +809,33 @@ out:
 	return ret;
 }
 
+/*
+ * Host suspend with an OTG device: only the clocks go off, the phy stays
+ * powered. MediaTek's save-current (low_power_enter()) and mainline's tphy
+ * power-off both wake the host IP again right after it fell asleep (for
+ * mainline's, the VBUSVALID/AVALID clear), so the IP-sleep wakeup would
+ * fire at once.
+ */
+static void host_low_power_enter(struct ssusb_mtk *ssusb)
+{
+	mutex_lock(&ssusb->power_mutex);
+	if (ssusb->is_power_on) {
+		peri_clks_disable(ssusb);
+		ssusb->is_power_on = 0;
+	}
+	mutex_unlock(&ssusb->power_mutex);
+}
+
+static void host_low_power_exit(struct ssusb_mtk *ssusb)
+{
+	mutex_lock(&ssusb->power_mutex);
+	if (!ssusb->is_power_on) {
+		peri_clks_enable(ssusb);
+		ssusb->is_power_on = 1;
+	}
+	mutex_unlock(&ssusb->power_mutex);
+}
+
 int ssusb_power_save(struct ssusb_mtk *ssusb)
 {
 	if (!ssusb->is_power_saving_mode)
@@ -1918,6 +1945,10 @@ static int mtu3d_probe(struct platform_device *pdev)
 		goto put_regmap;
 	}
 
+	/* as mainline mtu3: the DT says whether the host may wake the system */
+	if (of_property_read_bool(pdev->dev.of_node, "wakeup-source"))
+		device_init_wakeup(&pdev->dev, true);
+
 	ret = attach_input_dev(ssusb);
 	if (ret) {
 		mu3d_dbg(K_ERR, "fail to reg input device\n");
@@ -2066,13 +2097,16 @@ static int mtu3d_suspend(struct device *dev)
 	 * the USB driver calls PHY savecurrent, when USB cable is plugged out.
 	 *
 	 * In the power-saving mode the IP is already down without an OTG
-	 * device. With one, xhci-plat has suspended the host; power down the
-	 * host IP, phy and clocks after it, as the mainline mtu3 driver does.
+	 * device. With one, xhci-plat has stopped the roothub polling; power
+	 * down the host ports, IP and clocks, as the mainline mtu3 driver does,
+	 * and let a device's remote wakeup wake the system.
 	 */
 	if (ssusb->is_power_saving_mode) {
 		if (mtk_is_host_mode()) {
 			ssusb_host_suspend(ssusb);
-			low_power_enter(ssusb);
+			host_low_power_enter(ssusb);
+			if (device_may_wakeup(dev))
+				usb_wakeup_ip_sleep_en(ssusb, 0);
 		}
 		return 0;
 	}
@@ -2106,11 +2140,9 @@ static int mtu3d_resume(struct device *dev)
 
 	if (ssusb->is_power_saving_mode) {
 		if (mtk_is_host_mode()) {
-			ret = low_power_exit(ssusb);
-			if (ret) {
-				mu3d_dbg(K_ERR, "%s failed to enable clks & ldo\n", __func__);
-				return ret;
-			}
+			if (device_may_wakeup(dev))
+				usb_wakeup_ip_sleep_dis(ssusb);
+			host_low_power_exit(ssusb);
 			ssusb_host_resume(ssusb);
 		}
 		return 0;
