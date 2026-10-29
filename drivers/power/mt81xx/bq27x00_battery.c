@@ -114,7 +114,7 @@ static __initdata u8 bq27520_regs[] = {
 	0x26,	/* TTECP	*/
 	0x0C,	/* NAC		*/
 	0x12,	/* LMD		*/
-	0xFF,	/* CYCT - NA	*/
+	0x1E,	/* CYCT		*/
 	0x22,	/* AE		*/
 	0x20,	/* SOC(RSOC	*/
 	0x2E,	/* DCAP(ILMD) - NA */
@@ -377,6 +377,7 @@ static __initdata enum power_supply_property bq27520_battery_props[] = {
 	POWER_SUPPLY_PROP_POWER_AVG,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
 };
 
 static __initdata enum power_supply_property bq2753x_battery_props[] = {
